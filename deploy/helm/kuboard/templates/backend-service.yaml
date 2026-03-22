@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kuboard.fullname" . }}-backend
+  labels:
+    {{- include "kuboard.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ include "kuboard.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: controlplane
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+

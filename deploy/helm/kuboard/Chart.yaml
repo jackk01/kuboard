@@ -1,0 +1,7 @@
+apiVersion: v2
+name: kuboard
+description: Kuboard single-node deployment chart for SQLite + Redis mode
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+

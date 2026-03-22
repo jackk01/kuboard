@@ -1,0 +1,63 @@
+nameOverride: ""
+fullnameOverride: ""
+
+global:
+  timezone: Asia/Shanghai
+
+backend:
+  image:
+    repository: kuboard/backend
+    tag: latest
+    pullPolicy: IfNotPresent
+  workers: 1
+  replicas: 1
+  bootstrapAdmin: true
+  admin:
+    email: admin@example.com
+    password: change-me
+    displayName: Kuboard Admin
+  secretKey: change-me
+  encryptionKey: change-me-32-byte-secret
+  allowedHosts: kuboard.example.com
+  csrfTrustedOrigins: https://kuboard.example.com
+  corsAllowedOrigins: https://kuboard.example.com
+  secureCookies: true
+  hstsSeconds: 31536000
+  resources:
+    backend: {}
+    worker: {}
+
+frontend:
+  image:
+    repository: kuboard/frontend
+    tag: latest
+    pullPolicy: IfNotPresent
+  replicaCount: 1
+  service:
+    type: ClusterIP
+    port: 80
+  resources: {}
+
+redis:
+  image:
+    repository: redis
+    tag: 7-alpine
+    pullPolicy: IfNotPresent
+  resources: {}
+
+persistence:
+  enabled: true
+  size: 5Gi
+  storageClassName: ""
+
+ingress:
+  enabled: false
+  className: nginx
+  annotations: {}
+  hosts:
+    - host: kuboard.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
