@@ -67,46 +67,17 @@ textarea {
 }
 
 .auth-card {
-  width: min(960px, 100%);
-  display: grid;
-  grid-template-columns: 1.2fr 0.8fr;
-  gap: 24px;
-  padding: 24px;
-  border: 1px solid var(--kb-border);
-  border-radius: 32px;
+  width: min(420px, 100%);
+  padding: 28px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 28px;
   background: rgba(255, 255, 255, 0.86);
   box-shadow: var(--kb-shadow);
   backdrop-filter: blur(24px);
 }
 
-.auth-hero {
-  position: relative;
-  overflow: hidden;
-  padding: 36px;
-  border-radius: 26px;
-  background:
-    radial-gradient(circle at top left, rgba(132, 204, 22, 0.24), transparent 22%),
-    radial-gradient(circle at right center, rgba(14, 165, 164, 0.28), transparent 24%),
-    linear-gradient(145deg, #082f49 0%, #0f766e 54%, #172554 100%);
-  color: white;
-}
-
-.auth-hero::after {
-  content: '';
-  position: absolute;
-  inset: auto -8% -12% 24%;
-  height: 280px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.08);
-  filter: blur(6px);
-  transform: rotate(-15deg);
-}
-
 .auth-panel {
-  padding: 18px;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
+  width: 100%;
 }
 
 .eyebrow {
@@ -120,46 +91,18 @@ textarea {
   font-size: 12px;
 }
 
-.auth-title,
 .page-title {
   margin: 0;
   font-family: 'Space Grotesk', 'Noto Sans SC', sans-serif;
   letter-spacing: -0.03em;
 }
 
-.auth-title {
-  font-size: clamp(2.4rem, 5vw, 4rem);
-  line-height: 0.95;
-}
-
-.auth-description,
 .page-description {
   color: var(--kb-text-soft);
 }
 
-.auth-description {
-  margin-top: 16px;
-  max-width: 34rem;
-  color: rgba(255, 255, 255, 0.82);
-}
-
-.auth-grid {
-  display: grid;
-  gap: 16px;
-  margin-top: 28px;
-}
-
-.auth-pill {
-  padding: 12px 14px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: var(--kb-radius-md);
-  background: rgba(255, 255, 255, 0.08);
-}
-
-.auth-pill strong {
-  display: block;
-  margin-bottom: 4px;
-  font-size: 14px;
+.auth-form {
+  gap: 18px;
 }
 
 .form-grid {
@@ -363,107 +306,6 @@ textarea {
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.86);
   border: 1px solid var(--kb-border);
-}
-
-.account-menu {
-  position: relative;
-}
-
-.account-trigger {
-  display: grid;
-  place-items: center;
-  width: 40px;
-  height: 40px;
-  border-radius: 12px;
-  border: 1px solid rgba(14, 165, 164, 0.22);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(245, 251, 251, 0.9));
-  color: #0f5260;
-  cursor: pointer;
-  transition:
-    transform 140ms ease,
-    border-color 140ms ease,
-    box-shadow 160ms ease,
-    background 160ms ease;
-  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.08);
-}
-
-.account-trigger:hover {
-  transform: translateY(-1px);
-  border-color: rgba(14, 165, 164, 0.42);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 1), rgba(239, 250, 250, 0.95));
-  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.12);
-}
-
-.account-trigger:focus-visible {
-  outline: 2px solid rgba(14, 165, 164, 0.32);
-  outline-offset: 2px;
-}
-
-.account-trigger svg {
-  width: 18px;
-  height: 18px;
-  fill: currentColor;
-}
-
-.account-dropdown {
-  position: absolute;
-  top: calc(100% + 12px);
-  right: 0;
-  width: 236px;
-  padding: 8px;
-  border-radius: 16px;
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  background: rgba(255, 255, 255, 0.93);
-  backdrop-filter: blur(14px);
-  box-shadow: 0 20px 44px rgba(15, 23, 42, 0.14);
-  z-index: 20;
-}
-
-.account-meta {
-  display: grid;
-  gap: 2px;
-  padding: 8px 10px 12px;
-  border-bottom: 1px solid rgba(15, 23, 42, 0.08);
-  margin-bottom: 6px;
-}
-
-.account-meta strong {
-  font-size: 14px;
-  color: var(--kb-text);
-}
-
-.account-meta .muted {
-  font-size: 12px;
-  line-height: 1.3;
-}
-
-.account-action {
-  display: block;
-  width: 100%;
-  text-align: left;
-  padding: 10px 11px;
-  border: 0;
-  border-radius: 10px;
-  background: transparent;
-  color: var(--kb-text);
-  cursor: pointer;
-  font-size: 14px;
-  font-weight: 600;
-  transition: background 140ms ease, color 140ms ease;
-}
-
-.account-action:hover {
-  background: rgba(14, 165, 164, 0.12);
-}
-
-.account-action-danger {
-  color: #9f2a16;
-}
-
-.account-action-danger:hover {
-  background: rgba(180, 35, 24, 0.12);
 }
 
 .page-grid {
@@ -822,6 +664,20 @@ textarea {
   font-size: 12px;
 }
 
+.settings-account-grid {
+  align-items: stretch;
+}
+
+.settings-account-value {
+  font-size: clamp(1.8rem, 3vw, 2.5rem);
+}
+
+.settings-account-actions {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+
 @media (max-width: 1080px) {
   .app-shell {
     grid-template-columns: 1fr;
@@ -865,10 +721,5 @@ textarea {
 
   .button {
     width: 100%;
-  }
-
-  .account-dropdown {
-    right: 0;
-    left: auto;
   }
 }

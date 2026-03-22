@@ -23,11 +23,7 @@ onMounted(async () => {
     <section class="hero-panel">
       <div class="section-head">
         <div>
-          <div class="eyebrow" style="color: var(--kb-primary-deep)">Platform Overview</div>
-          <h2 class="page-title">多集群控制平面已经初始化</h2>
-          <p class="page-description">
-            当前版本已经接通登录、集群导入、审计、轻量控制平面元数据存储和 Vue 前端壳层。
-          </p>
+          <h2 class="page-title">总览</h2>
         </div>
         <StatusBadge :value="(summary?.clusters.ready ?? 0) > 0 ? 'ready' : 'unknown'" />
       </div>

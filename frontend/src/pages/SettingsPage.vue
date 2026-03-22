@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 
 import { ApiError, apiRequest } from '../lib/api'
 import { useClusterStore } from '../stores/clusters'
@@ -13,6 +14,7 @@ import type {
 } from '../types'
 
 const clusterStore = useClusterStore()
+const router = useRouter()
 const sessionStore = useSessionStore()
 
 const selectedClusterId = ref('')
@@ -72,6 +74,11 @@ const availableClusters = computed(() => clusterStore.items)
 const visibleMappings = computed(() =>
   mappings.value.filter((mapping) => !mapping.cluster || mapping.cluster === selectedClusterId.value),
 )
+
+async function handleLogout() {
+  await sessionStore.logout()
+  await router.push({ name: 'login' })
+}
 
 function resetForm() {
   editingMappingId.value = null
@@ -531,6 +538,44 @@ watch(
 
 <template>
   <div class="page-grid">
+    <section class="surface-card">
+      <div class="section-head">
+        <div>
+          <h2>当前账号</h2>
+          <p>右上角用户入口已收拢到设置页，这里统一查看当前登录信息并执行退出。</p>
+        </div>
+      </div>
+
+      <div class="dual-grid settings-account-grid">
+        <div class="stat-card">
+          <h3>显示名称</h3>
+          <div class="stat-value settings-account-value">{{ sessionStore.displayName }}</div>
+          <div class="stat-caption">{{ sessionStore.currentUser?.email || '--' }}</div>
+        </div>
+
+        <div class="stat-card settings-account-actions">
+          <h3>账号操作</h3>
+          <div class="mini-kv" style="margin-top: 12px">
+            <div>
+              <span>角色</span>
+              <strong>
+                {{
+                  sessionStore.currentUser?.is_superuser
+                    ? 'Superuser'
+                    : sessionStore.currentUser?.is_staff
+                      ? 'Staff'
+                      : 'User'
+                }}
+              </strong>
+            </div>
+          </div>
+          <div class="button-row" style="margin-top: 18px">
+            <button class="button button-danger" @click="handleLogout">退出登录</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <section class="surface-card">
       <div class="section-head">
         <div>

@@ -33,59 +33,33 @@ async function submit() {
 <template>
   <div class="auth-page">
     <div class="auth-card">
-      <section class="auth-hero">
-        <div class="eyebrow">Cloud Native Console</div>
-        <h1 class="auth-title">看清每个集群，掌控每次变更。</h1>
-        <p class="auth-description">
-          Kuboard 的初始化版本已经接入多集群导入、审计留痕和通用资源控制平面骨架，
-          接下来可以在这个基础上继续实现 Kubernetes Gateway 与实时流式能力。
-        </p>
-
-        <div class="auth-grid">
-          <div class="auth-pill">
-            <strong>多集群入口</strong>
-            <span>通过 kubeconfig 导入，后端统一收口访问。</span>
-          </div>
-          <div class="auth-pill">
-            <strong>RBAC 导向</strong>
-            <span>已预留身份映射与权限桥接模型，方便后续接 Kubernetes Impersonation。</span>
-          </div>
-          <div class="auth-pill">
-            <strong>轻量元数据</strong>
-            <span>当前使用 SQLite + Redis，先快速跑通控制平面。</span>
-          </div>
-        </div>
-      </section>
-
       <section class="auth-panel">
-        <div class="section-head">
-          <div>
-            <h2>登录 Kuboard</h2>
-            <p>默认管理员账号可通过 `bootstrap_kuboard` 命令生成。</p>
+        <header class="auth-heading">
+          <h1 class="page-title auth-title">Kuboard</h1>
+          <p class="auth-subtitle">多集群管理面板</p>
+        </header>
+        <div class="form-grid auth-form">
+          <div class="auth-field-row">
+            <input id="login-user" v-model="email" type="text" autocomplete="username" placeholder="用户" />
           </div>
-        </div>
 
-        <div class="form-grid">
-          <label class="field-label">
-            邮箱
-            <input v-model="email" type="email" autocomplete="username" />
-          </label>
-
-          <label class="field-label">
-            密码
-            <input v-model="password" type="password" autocomplete="current-password" />
-          </label>
+          <div class="auth-field-row">
+            <input
+              id="login-password"
+              v-model="password"
+              type="password"
+              autocomplete="current-password"
+              placeholder="密码"
+              @keyup.enter="submit"
+            />
+          </div>
 
           <div v-if="errorMessage" class="error-text">{{ errorMessage }}</div>
 
           <div class="button-row">
             <button class="button button-primary" :disabled="sessionStore.isAuthenticating" @click="submit">
-              {{ sessionStore.isAuthenticating ? '登录中...' : '进入控制台' }}
+              {{ sessionStore.isAuthenticating ? '登录中...' : '登录' }}
             </button>
-          </div>
-
-          <div class="helper-text">
-            默认建议先执行：`python3 manage.py bootstrap_kuboard`
           </div>
         </div>
       </section>
@@ -93,3 +67,54 @@ async function submit() {
   </div>
 </template>
 
+<style scoped>
+.auth-heading {
+  margin-bottom: 20px;
+  text-align: center;
+}
+
+.auth-title {
+  margin: 0;
+  font-size: clamp(24px, 3vw, 30px);
+  line-height: 1.2;
+}
+
+.auth-subtitle {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--kb-text-soft);
+  letter-spacing: 0.04em;
+}
+
+.auth-field-row {
+  display: block;
+}
+
+.auth-field-row input {
+  width: 100%;
+  padding: 13px 14px;
+  border: 1px solid var(--kb-border);
+  border-radius: var(--kb-radius-sm);
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--kb-text);
+  text-align: center;
+  transition:
+    border-color 120ms ease,
+    box-shadow 120ms ease,
+    transform 120ms ease;
+}
+
+.auth-field-row input:focus {
+  outline: none;
+  border-color: rgba(14, 165, 164, 0.4);
+  box-shadow: 0 0 0 4px rgba(14, 165, 164, 0.12);
+}
+
+.auth-field-row input::placeholder {
+  color: #9ca3af;
+}
+
+.auth-form .button-row {
+  justify-content: center;
+}
+</style>
