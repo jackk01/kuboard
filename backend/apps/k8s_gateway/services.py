@@ -151,6 +151,14 @@ class KubernetesClient:
         return context
 
     @staticmethod
+    def _build_url_opener(ssl_context: ssl.SSLContext):
+        return request.build_opener(
+            request.ProxyHandler({}),
+            request.HTTPHandler(),
+            request.HTTPSHandler(context=ssl_context),
+        )
+
+    @staticmethod
     def _safe_remove(path: str):
         try:
             os.remove(path)
@@ -182,7 +190,7 @@ class KubernetesClient:
 
         with ExitStack() as stack:
             ssl_context = self._build_ssl_context(stack)
-            opener = request.build_opener(request.HTTPSHandler(context=ssl_context))
+            opener = self._build_url_opener(ssl_context)
             req = request.Request(url, method=method, data=body)
             self._apply_headers(req, headers)
 
@@ -208,6 +216,18 @@ class KubernetesClient:
                     f"连接集群失败: {exc.reason}",
                     status_code=502,
                     details={"reason": str(exc.reason)},
+                ) from exc
+            except TimeoutError as exc:
+                raise KubernetesAPIError(
+                    f"连接集群超时: {exc}",
+                    status_code=504,
+                    details={"reason": str(exc), "timeout_seconds": 10},
+                ) from exc
+            except OSError as exc:
+                raise KubernetesAPIError(
+                    f"连接集群失败: {exc}",
+                    status_code=502,
+                    details={"reason": str(exc)},
                 ) from exc
 
     def request_json(
@@ -275,7 +295,7 @@ class KubernetesClient:
 
         with ExitStack() as stack:
             ssl_context = self._build_ssl_context(stack)
-            opener = request.build_opener(request.HTTPSHandler(context=ssl_context))
+            opener = self._build_url_opener(ssl_context)
             req = request.Request(url, method=method, data=body)
             self._apply_headers(req, headers)
 
@@ -309,6 +329,18 @@ class KubernetesClient:
                     f"连接集群失败: {exc.reason}",
                     status_code=502,
                     details={"reason": str(exc.reason)},
+                ) from exc
+            except TimeoutError as exc:
+                raise KubernetesAPIError(
+                    f"连接集群超时: {exc}",
+                    status_code=504,
+                    details={"reason": str(exc), "timeout_seconds": timeout},
+                ) from exc
+            except OSError as exc:
+                raise KubernetesAPIError(
+                    f"连接集群失败: {exc}",
+                    status_code=502,
+                    details={"reason": str(exc)},
                 ) from exc
 
     def probe(self) -> dict[str, Any]:
@@ -1382,14 +1414,29 @@ class KubernetesClient:
         return probe
 
     def sync_capability_from_discovery(self, discovery: dict[str, Any]):
+        from apps.clusters.models import ClusterCapability
+
         groups = discovery["groups"]
         resource_index = discovery["resource_index"]
         supports_exec = bool(discovery.get("supports_exec"))
 
-        self.capability.discovered_api_groups = [group["group"] for group in groups]
-        self.capability.openapi_index = resource_index
-        self.capability.supports_exec = supports_exec
-        self.capability.last_synced_at = timezone.now()
-        self.capability.save(
-            update_fields=["discovered_api_groups", "openapi_index", "supports_exec", "last_synced_at"]
+        # 确保 capability 记录存在（可能因迁移或异常导致缺失）
+        if not ClusterCapability.objects.filter(cluster=self.cluster).exists():
+            self.capability = ClusterCapability.objects.create(
+                cluster=self.cluster,
+                discovered_api_groups=[group["group"] for group in groups],
+                openapi_index=resource_index,
+                supports_exec=supports_exec,
+                last_synced_at=timezone.now(),
+            )
+            return
+
+        # 使用 DB 层的 update 避免内存对象与数据库不一致导致 "did not affect any rows"
+        ClusterCapability.objects.filter(cluster=self.cluster).update(
+            discovered_api_groups=[group["group"] for group in groups],
+            openapi_index=resource_index,
+            supports_exec=supports_exec,
+            last_synced_at=timezone.now(),
         )
+        # 刷新内存中的 capability 对象，使后续访问保持一致
+        self.capability.refresh_from_db()

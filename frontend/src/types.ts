@@ -59,6 +59,17 @@ export interface Cluster {
   capability: ClusterCapability
 }
 
+export interface LocalKubeconfigPayload {
+  source_path: string
+  kubeconfig: string
+  current_context: string
+  server: string
+  cluster_count: number
+  user_count: number
+  context_count: number
+  fingerprint: string
+}
+
 export interface AuditEvent {
   id: number
   event_type: string

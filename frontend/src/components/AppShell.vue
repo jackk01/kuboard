@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 
 import { useSessionStore } from '../stores/session'
@@ -7,14 +7,13 @@ import { useSessionStore } from '../stores/session'
 const route = useRoute()
 const router = useRouter()
 const sessionStore = useSessionStore()
-const recentRouteNames = ref<string[]>([])
 
 const navItems = [
-  { label: '总览', icon: '总', to: { name: 'dashboard' } },
-  { label: '集群', icon: '集', to: { name: 'clusters' } },
-  { label: '资源', icon: '资', to: { name: 'explorer' } },
-  { label: '审计', icon: '审', to: { name: 'audit' } },
-  { label: '设置', icon: '设', to: { name: 'settings' } },
+  { label: '总览', to: { name: 'dashboard' } },
+  { label: '集群', to: { name: 'clusters' } },
+  { label: '资源', to: { name: 'explorer' } },
+  { label: '审计', to: { name: 'audit' } },
+  { label: '设置', to: { name: 'settings' } },
 ]
 
 type QuickEntry = {
@@ -36,38 +35,6 @@ const pageTitle = computed(() => {
   return navItems.find((item) => item.to.name === route.name)?.label ?? 'Kuboard'
 })
 
-const recentNavItems = computed(() =>
-  recentRouteNames.value
-    .map((name) => navItems.find((item) => item.to.name === name))
-    .filter((item): item is (typeof navItems)[number] => Boolean(item)),
-)
-
-function readRecentRoutes() {
-  try {
-    const raw = window.localStorage.getItem('kuboard:recent-routes')
-    const parsed = raw ? JSON.parse(raw) : []
-    if (Array.isArray(parsed)) {
-      recentRouteNames.value = parsed.filter((item) => typeof item === 'string')
-    }
-  } catch {
-    recentRouteNames.value = []
-  }
-}
-
-function writeRecentRoutes(names: string[]) {
-  window.localStorage.setItem('kuboard:recent-routes', JSON.stringify(names))
-}
-
-function markRecentRoute(name: string) {
-  const deduped = [name, ...recentRouteNames.value.filter((item) => item !== name)].slice(0, 6)
-  recentRouteNames.value = deduped
-  writeRecentRoutes(deduped)
-}
-
-function jumpTo(item: (typeof navItems)[number]) {
-  router.push(item.to)
-}
-
 async function handleLogout() {
   await sessionStore.logout()
   await router.push({ name: 'login' })
@@ -85,18 +52,6 @@ async function runQuickEntry(entry: QuickEntry) {
     dispatchShellAction(entry.action)
   }
 }
-
-readRecentRoutes()
-
-watch(
-  () => route.name,
-  (value) => {
-    if (typeof value === 'string' && navItems.some((item) => item.to.name === value)) {
-      markRecentRoute(value)
-    }
-  },
-  { immediate: true },
-)
 </script>
 
 <template>
@@ -106,7 +61,7 @@ watch(
         <div class="brand-mark">K</div>
         <div class="brand-text">
           <strong>Kuboard</strong>
-          <span>多集群管理面板</span>
+          <span>多集群管理</span>
         </div>
       </div>
 
@@ -117,7 +72,6 @@ watch(
           class="nav-link"
           :to="item.to"
         >
-          <span class="nav-link-icon">{{ item.icon }}</span>
           <span class="nav-link-text">{{ item.label }}</span>
         </RouterLink>
       </nav>
@@ -153,20 +107,6 @@ watch(
           <button class="button button-secondary" style="padding: 8px 14px" @click="handleLogout">退出登录</button>
         </div>
       </header>
-
-      <section class="surface-card shell-quick-card">
-        <div class="pill-row">
-          <span class="muted">最近访问</span>
-          <button
-            v-for="item in recentNavItems"
-            :key="`recent-${item.label}`"
-            class="button button-secondary shell-recent-btn"
-            @click="jumpTo(item)"
-          >
-            {{ item.label }}
-          </button>
-        </div>
-      </section>
 
       <RouterView />
     </main>

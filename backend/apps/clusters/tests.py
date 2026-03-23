@@ -1,3 +1,4 @@
+from pathlib import Path
 from unittest.mock import patch
 
 from django.test import TestCase
@@ -14,7 +15,7 @@ from apps.clusters.models import (
     ClusterStatus,
 )
 from apps.k8s_gateway.services import KubernetesAPIError
-from apps.clusters.services import _is_ip_address, _replace_server_host, validate_kubeconfig
+from apps.clusters.services import _is_ip_address, load_local_kubeconfig, validate_kubeconfig
 from apps.iam.models import User
 
 
@@ -32,32 +33,6 @@ class IsIpAddressTests(TestCase):
         self.assertFalse(_is_ip_address("master"))
         self.assertFalse(_is_ip_address("example.com"))
         self.assertFalse(_is_ip_address("k8s-master.local"))
-
-
-class ReplaceServerHostTests(TestCase):
-    def test_replace_hostname_with_ip(self):
-        result = _replace_server_host("https://master:6443", "192.168.1.100")
-        self.assertEqual(result, "https://192.168.1.100:6443")
-
-    def test_replace_hostname_without_port(self):
-        result = _replace_server_host("https://master", "10.0.0.1")
-        self.assertEqual(result, "https://10.0.0.1")
-
-    def test_replace_with_ipv6(self):
-        result = _replace_server_host("https://master:6443", "::1")
-        self.assertEqual(result, "https://[::1]:6443")
-
-    def test_empty_url(self):
-        result = _replace_server_host("", "10.0.0.1")
-        self.assertEqual(result, "")
-
-    def test_empty_ip(self):
-        result = _replace_server_host("https://master:6443", "")
-        self.assertEqual(result, "https://master:6443")
-
-    def test_preserve_path(self):
-        result = _replace_server_host("https://master:6443/api/v1", "10.0.0.1")
-        self.assertEqual(result, "https://10.0.0.1:6443/api/v1")
 
 
 class KubeconfigValidationTests(TestCase):
@@ -131,56 +106,8 @@ current-context: sample
         with self.assertRaises(ValidationError):
             validate_kubeconfig(kubeconfig)
 
-
-class ValidateKubeconfigServerOverrideTests(TestCase):
-    def test_server_override_replaces_hostname(self):
-        kubeconfig = """\
-apiVersion: v1
-kind: Config
-clusters:
-  - name: sample
-    cluster:
-      server: https://master:6443
-      certificate-authority-data: dGVzdA==
-users:
-  - name: sample
-    user:
-      token: test-token
-contexts:
-  - name: sample
-    context:
-      cluster: sample
-      user: sample
-current-context: sample
-"""
-        inspection = validate_kubeconfig(kubeconfig, server_override="192.168.1.100")
-        self.assertEqual(inspection.server, "https://192.168.1.100:6443")
-        self.assertIn("192.168.1.100", inspection.normalized)
-
-    def test_server_override_ignored_for_ip_server(self):
-        kubeconfig = """\
-apiVersion: v1
-kind: Config
-clusters:
-  - name: sample
-    cluster:
-      server: https://10.0.0.1:6443
-users:
-  - name: sample
-    user:
-      token: test-token
-contexts:
-  - name: sample
-    context:
-      cluster: sample
-      user: sample
-current-context: sample
-"""
-        # server_override 应该不影响已经是 IP 地址的 server
-        inspection = validate_kubeconfig(kubeconfig, server_override="192.168.1.100")
-        self.assertEqual(inspection.server, "https://10.0.0.1:6443")
-
-    def test_no_server_override_keeps_hostname(self):
+class KubeconfigHostnameTests(TestCase):
+    def test_hostname_server_kept_for_local_hosts_resolution(self):
         kubeconfig = """\
 apiVersion: v1
 kind: Config
@@ -203,14 +130,17 @@ current-context: sample
         inspection = validate_kubeconfig(kubeconfig)
         self.assertEqual(inspection.server, "https://master:6443")
 
-    def test_server_override_with_ip_unchanged(self):
+
+class LoadLocalKubeconfigTests(TestCase):
+    @patch("apps.clusters.services.Path.home", return_value=Path("/tmp/kuboard-home"))
+    def test_load_local_kubeconfig_reads_default_path(self, _home_mock):
         kubeconfig = """\
 apiVersion: v1
 kind: Config
 clusters:
   - name: sample
     cluster:
-      server: https://10.0.0.1:6443
+      server: https://127.0.0.1:6443
 users:
   - name: sample
     user:
@@ -222,8 +152,23 @@ contexts:
       user: sample
 current-context: sample
 """
-        inspection = validate_kubeconfig(kubeconfig)
-        self.assertEqual(inspection.server, "https://10.0.0.1:6443")
+        with patch("pathlib.Path.exists", return_value=True), patch("pathlib.Path.is_file", return_value=True), patch(
+            "pathlib.Path.read_text", return_value=kubeconfig
+        ) as read_text_mock:
+            result = load_local_kubeconfig()
+
+        read_text_mock.assert_called_once_with(encoding="utf-8")
+        self.assertEqual(result.source_path, "/tmp/kuboard-home/.kube/config")
+        self.assertEqual(result.kubeconfig, kubeconfig)
+        self.assertEqual(result.inspection.current_context, "sample")
+
+    @patch("apps.clusters.services.Path.home", return_value=Path("/tmp/kuboard-home"))
+    def test_load_local_kubeconfig_raises_when_missing(self, _home_mock):
+        with patch("pathlib.Path.exists", return_value=False):
+            with self.assertRaises(ValidationError) as context:
+                load_local_kubeconfig()
+
+        self.assertIn("未找到本地 kubeconfig 文件", str(context.exception))
 
 
 class ClusterManagementAPITests(TestCase):
@@ -273,6 +218,39 @@ class ClusterManagementAPITests(TestCase):
         response = self.client.delete(f"/api/v1/clusters/{self.cluster.id}")
         self.assertEqual(response.status_code, 204)
         self.assertFalse(Cluster.objects.filter(id=self.cluster.id).exists())
+
+    @patch("apps.clusters.api.load_local_kubeconfig")
+    def test_get_local_kubeconfig(self, load_local_kubeconfig_mock):
+        load_local_kubeconfig_mock.return_value = type(
+            "LocalResult",
+            (),
+            {
+                "source_path": "/Users/test/.kube/config",
+                "kubeconfig": "apiVersion: v1\nkind: Config\n",
+                "inspection": type(
+                    "Inspection",
+                    (),
+                    {
+                        "current_context": "sample",
+                        "server": "https://127.0.0.1:6443",
+                        "cluster_count": 1,
+                        "user_count": 1,
+                        "context_count": 1,
+                        "fingerprint": "fingerprint",
+                    },
+                )(),
+            },
+        )()
+
+        response = self.client.get("/api/v1/clusters/local-kubeconfig")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["source_path"], "/Users/test/.kube/config")
+        self.assertEqual(payload["current_context"], "sample")
+        self.assertEqual(payload["server"], "https://127.0.0.1:6443")
+        self.assertEqual(payload["cluster_count"], 1)
+        self.assertEqual(payload["kubeconfig"], "apiVersion: v1\nkind: Config\n")
 
     @patch("apps.k8s_gateway.services.KubernetesClient.discover")
     @patch("apps.k8s_gateway.services.KubernetesClient.probe")

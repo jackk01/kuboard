@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import StatusBadge from '../components/StatusBadge.vue'
@@ -11,6 +11,15 @@ const feedback = ref('')
 const errorMessage = ref('')
 const editClusterId = ref<string | null>(null)
 const importPanelOpen = ref(true)
+const importMode = ref<'paste' | 'upload'>('paste')
+const uploadFileName = ref('')
+const loadingLocalKubeconfig = ref(false)
+const localKubeconfigMeta = ref<{
+  source_path: string
+  current_context: string
+  server: string
+  cluster_count: number
+} | null>(null)
 
 const searchKeyword = ref('')
 const statusFilter = ref<'all' | 'ready' | 'pending' | 'error'>('all')
@@ -21,49 +30,12 @@ const form = reactive({
   environment: 'dev',
   description: '',
   kubeconfig: '',
-  server_override: '',
 })
 
 const editForm = reactive({
   name: '',
   environment: 'dev',
   description: '',
-})
-
-const detectedServerInfo = computed(() => {
-  const text = form.kubeconfig.trim()
-  if (!text) return null
-
-  const serverMatch = text.match(/^\s*server:\s*(\S+)/m)
-  if (!serverMatch) return null
-
-  const serverUrl = serverMatch[1]
-  try {
-    const url = new URL(serverUrl)
-    const hostname = url.hostname
-
-    const ipv4Pattern = /^\d{1,3}(\.\d{1,3}){3}$/
-    const ipv6Pattern = /^[\da-fA-F:]+$/
-    const isIp = ipv4Pattern.test(hostname) || ipv6Pattern.test(hostname.replace(/^\[|\]$/g, ''))
-
-    if (!isIp) {
-      return {
-        serverUrl,
-        hostname,
-        needsOverride: true,
-      }
-    }
-  } catch {
-    return null
-  }
-
-  return null
-})
-
-watch(detectedServerInfo, (info) => {
-  if (!info?.needsOverride) {
-    form.server_override = ''
-  }
 })
 
 const statusSummary = computed(() => {
@@ -210,29 +182,22 @@ async function importCluster() {
   errorMessage.value = ''
   feedback.value = ''
 
-  if (detectedServerInfo.value?.needsOverride && !form.server_override.trim()) {
-    errorMessage.value = `kubeconfig 中的 server 地址使用了主机名 "${detectedServerInfo.value.hostname}"，请填写对应 IP。`
-    return
-  }
-
   try {
-    const payload: Record<string, string> = {
+    const payload = {
       name: form.name,
       environment: form.environment,
       description: form.description,
       kubeconfig: form.kubeconfig,
     }
-    if (form.server_override.trim()) {
-      payload.server_override = form.server_override.trim()
-    }
 
-    const cluster = await clusterStore.importCluster(payload as any)
+    const cluster = await clusterStore.importCluster(payload)
     feedback.value = `集群 ${cluster.name} 已导入。`
     form.name = ''
     form.environment = 'dev'
     form.description = ''
     form.kubeconfig = ''
-    form.server_override = ''
+    uploadFileName.value = ''
+    importMode.value = 'paste'
     importPanelOpen.value = false
   } catch (error) {
     if (error instanceof ApiError) {
@@ -241,6 +206,73 @@ async function importCluster() {
     }
     errorMessage.value = '导入失败，请检查后端日志。'
   }
+}
+
+async function fillFromLocalKubeconfig() {
+  errorMessage.value = ''
+  feedback.value = ''
+  loadingLocalKubeconfig.value = true
+
+  try {
+    const payload = await clusterStore.fetchLocalKubeconfig()
+    form.kubeconfig = payload.kubeconfig
+    if (!form.name.trim()) {
+      form.name = payload.current_context || 'local-kubeconfig'
+    }
+    localKubeconfigMeta.value = {
+      source_path: payload.source_path,
+      current_context: payload.current_context,
+      server: payload.server,
+      cluster_count: payload.cluster_count,
+    }
+    feedback.value = `已从 ${payload.source_path} 读取 kubeconfig。`
+  } catch (error) {
+    localKubeconfigMeta.value = null
+    if (error instanceof ApiError) {
+      errorMessage.value = error.message
+      return
+    }
+    errorMessage.value = '读取本地 kubeconfig 失败，请检查后端日志。'
+  } finally {
+    loadingLocalKubeconfig.value = false
+  }
+}
+
+function handleFileUpload(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+
+  uploadFileName.value = file.name
+  errorMessage.value = ''
+  feedback.value = ''
+
+  const reader = new FileReader()
+  reader.onload = (e) => {
+    const content = e.target?.result as string
+    if (!content || !content.trim()) {
+      errorMessage.value = '文件内容为空，请检查文件是否正确。'
+      return
+    }
+    form.kubeconfig = content
+    feedback.value = `已从文件 "${file.name}" 读取 kubeconfig 内容。`
+  }
+  reader.onerror = () => {
+    errorMessage.value = '文件读取失败，请重试。'
+  }
+  reader.readAsText(file)
+}
+
+function triggerFileInput() {
+  const input = document.getElementById('kubeconfig-file-input') as HTMLInputElement
+  input?.click()
+}
+
+function clearUploadedFile() {
+  uploadFileName.value = ''
+  form.kubeconfig = ''
+  const input = document.getElementById('kubeconfig-file-input') as HTMLInputElement
+  if (input) input.value = ''
 }
 
 function startEdit(cluster: {
@@ -490,55 +522,130 @@ async function confirmDelete() {
       </div>
 
       <div v-if="importPanelOpen" class="cluster-import-panel">
-        <div class="section-head" style="margin-bottom: 12px">
+        <div class="section-head" style="margin-bottom: 16px">
           <div>
             <h2>导入 Kubernetes 集群</h2>
-            <p>支持 kubeconfig 安全校验、自动健康检查与自动 Discovery。</p>
+            <p>选择一种方式提供 kubeconfig 以导入集群。</p>
           </div>
+          <button class="button button-secondary" @click="importPanelOpen = false">关闭</button>
         </div>
 
-        <div class="dual-grid">
-          <div class="form-grid">
-            <label class="field-label">
-              集群名称
-              <input v-model="form.name" placeholder="例如：prod-cn-hangzhou" />
-            </label>
-            <label class="field-label">
-              环境
-              <select v-model="form.environment">
-                <option value="test">test</option>
-                <option value="dev">dev</option>
-                <option value="uat">uat</option>
-                <option value="prod">prod</option>
-              </select>
-            </label>
-            <label class="field-label">
-              描述
-              <input v-model="form.description" placeholder="例如：核心生产环境集群" />
-            </label>
+        <!-- 基本信息 -->
+        <div class="import-basic-fields">
+          <label class="field-label">
+            集群名称
+            <input v-model="form.name" placeholder="例如：prod-cn-hangzhou" />
+          </label>
+          <label class="field-label">
+            环境
+            <select v-model="form.environment">
+              <option value="test">test</option>
+              <option value="dev">dev</option>
+              <option value="uat">uat</option>
+              <option value="prod">prod</option>
+            </select>
+          </label>
+          <label class="field-label">
+            描述
+            <input v-model="form.description" placeholder="例如：核心生产环境集群" />
+          </label>
+        </div>
+
+        <!-- Tab 切换 -->
+        <div class="import-tabs">
+          <button
+            class="import-tab"
+            :class="{ 'import-tab-active': importMode === 'paste' }"
+            @click="importMode = 'paste'"
+          >
+            <span class="import-tab-icon">📋</span>
+            粘贴 kubeconfig 内容
+          </button>
+          <button
+            class="import-tab"
+            :class="{ 'import-tab-active': importMode === 'upload' }"
+            @click="importMode = 'upload'"
+          >
+            <span class="import-tab-icon">📁</span>
+            上传 kubeconfig 文件
+          </button>
+        </div>
+
+        <!-- 粘贴 kubeconfig 内容 -->
+        <div v-if="importMode === 'paste'" class="import-tab-content">
+          <div class="import-tab-header">
+            <p class="helper-text">将 kubeconfig 文件内容复制并粘贴到下方文本框中，也可以从服务器 ~/.kube/config 自动读取。</p>
+            <button class="button button-secondary" :disabled="loadingLocalKubeconfig" @click="fillFromLocalKubeconfig">
+              {{ loadingLocalKubeconfig ? '读取中...' : '从 ~/.kube/config 读取' }}
+            </button>
+          </div>
+
+          <div v-if="localKubeconfigMeta" class="import-meta-bar">
+            来源：<code>{{ localKubeconfigMeta.source_path }}</code>
+            · Context：<code>{{ localKubeconfigMeta.current_context }}</code>
+            · Server：<code>{{ localKubeconfigMeta.server }}</code>
+            · Clusters：{{ localKubeconfigMeta.cluster_count }}
           </div>
 
           <label class="field-label">
-            kubeconfig
+            kubeconfig 内容
             <textarea
               v-model="form.kubeconfig"
-              placeholder="粘贴 kubeconfig 内容。"
+              placeholder="在此粘贴 kubeconfig YAML 内容..."
+              class="kubeconfig-textarea"
             />
           </label>
         </div>
 
-        <div v-if="detectedServerInfo?.needsOverride" class="helper-text" style="margin-top: 10px">
-          检测到主机名 <code>{{ detectedServerInfo.hostname }}</code>，请填写可访问 IP。
-        </div>
-        <label v-if="detectedServerInfo?.needsOverride" class="field-label" style="margin-top: 10px">
-          API Server 实际 IP 地址
-          <input v-model="form.server_override" placeholder="例如：192.168.1.100" />
-        </label>
+        <!-- 上传 kubeconfig 文件 -->
+        <div v-if="importMode === 'upload'" class="import-tab-content">
+          <p class="helper-text" style="margin-bottom: 12px">
+            选择本地的 kubeconfig 文件进行上传，系统将自动解析文件内容。
+          </p>
 
-        <div class="button-row" style="margin-top: 14px">
-          <button class="button button-primary" :disabled="clusterStore.saving" @click="importCluster">
+          <input
+            id="kubeconfig-file-input"
+            type="file"
+            accept=".yaml,.yml,.conf,.config,.txt,application/x-yaml,text/yaml,text/plain"
+            style="display: none"
+            @change="handleFileUpload"
+          />
+
+          <div class="import-upload-zone" @click="triggerFileInput">
+            <div v-if="!uploadFileName" class="import-upload-placeholder">
+              <span class="import-upload-icon">⬆️</span>
+              <strong>点击选择 kubeconfig 文件</strong>
+              <span class="helper-text">支持 .yaml / .yml / .conf / .config / .txt 格式</span>
+            </div>
+            <div v-else class="import-upload-result">
+              <span class="import-upload-icon">✅</span>
+              <div>
+                <strong>{{ uploadFileName }}</strong>
+                <span class="helper-text">文件已读取，内容已就绪</span>
+              </div>
+              <button class="button button-secondary" style="margin-left: auto; padding: 6px 12px" @click.stop="clearUploadedFile">
+                清除
+              </button>
+            </div>
+          </div>
+
+          <div v-if="form.kubeconfig && uploadFileName" class="import-preview">
+            <label class="field-label">
+              文件内容预览
+              <textarea
+                :value="form.kubeconfig"
+                readonly
+                class="kubeconfig-textarea kubeconfig-preview"
+              />
+            </label>
+          </div>
+        </div>
+
+        <div class="button-row" style="margin-top: 16px">
+          <button class="button button-primary" :disabled="clusterStore.saving || !form.kubeconfig.trim()" @click="importCluster">
             {{ clusterStore.saving ? '导入中...' : '导入集群' }}
           </button>
+          <span v-if="!form.kubeconfig.trim()" class="helper-text">请先提供 kubeconfig 内容</span>
         </div>
       </div>
     </section>

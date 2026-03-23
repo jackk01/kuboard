@@ -1,12 +1,13 @@
+from unittest.mock import MagicMock, patch
+
 from django.test import TestCase
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
-from unittest.mock import patch
 
 from apps.clusters.models import Cluster, ClusterCapability, ClusterCredential, ClusterHealthStatus
 from apps.iam.models import User
 from apps.streams.models import StreamSession
-from .services import build_resource_path
+from .services import KubernetesClient, build_resource_path
 
 
 class KubernetesGatewayServiceTests(TestCase):
@@ -38,6 +39,53 @@ class KubernetesGatewayServiceTests(TestCase):
             namespace="default",
         )
         self.assertEqual(path, "/api/v1/namespaces/default/pods")
+
+    def test_kubernetes_client_disables_env_proxy_for_direct_cluster_access(self):
+        cluster = Cluster.objects.create(
+            name="demo-service",
+            slug="demo-service",
+            environment="dev",
+            server="https://master:6443",
+            default_context="demo",
+        )
+        credential = ClusterCredential(cluster=cluster, active_context="demo", fingerprint="test")
+        credential.set_kubeconfig(
+            """
+apiVersion: v1
+kind: Config
+clusters:
+  - name: demo
+    cluster:
+      server: https://master:6443
+users:
+  - name: demo
+    user:
+      token: demo-token
+contexts:
+  - name: demo
+    context:
+      cluster: demo
+      user: demo
+current-context: demo
+"""
+        )
+        credential.save()
+        ClusterCapability.objects.create(cluster=cluster)
+        ClusterHealthStatus.objects.create(cluster=cluster)
+
+        client = KubernetesClient(cluster)
+        opener = MagicMock()
+        response = MagicMock()
+        response.read.return_value = b'{"gitVersion": "v1.30.0"}'
+        opener.open.return_value.__enter__.return_value = response
+
+        with patch("apps.k8s_gateway.services.request.build_opener", return_value=opener) as build_opener_mock:
+            payload = client.request_json("/version")
+
+        self.assertEqual(payload["gitVersion"], "v1.30.0")
+        handlers = build_opener_mock.call_args.args
+        self.assertEqual(type(handlers[0]).__name__, "ProxyHandler")
+        self.assertEqual(getattr(handlers[0], "proxies", None), {})
 
 
 class KubernetesGatewayAPITests(TestCase):

@@ -2,14 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
-import logging
+from pathlib import Path
 from dataclasses import dataclass
-from urllib.parse import urlparse, urlunparse
 
 import yaml
 from rest_framework import serializers
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -23,6 +20,13 @@ class KubeconfigInspection:
     fingerprint: str
 
 
+@dataclass
+class LocalKubeconfigResult:
+    source_path: str
+    kubeconfig: str
+    inspection: KubeconfigInspection
+
+
 def _is_ip_address(host: str) -> bool:
     """判断给定字符串是否为合法的 IPv4 或 IPv6 地址。"""
     try:
@@ -32,30 +36,13 @@ def _is_ip_address(host: str) -> bool:
         return False
 
 
-def _replace_server_host(server_url: str, new_ip: str) -> str:
-    """将 server URL 中的主机名替换为指定的 IP 地址，保留端口和路径。"""
-    if not server_url or not new_ip:
-        return server_url
-
-    parsed = urlparse(server_url)
-    port = parsed.port
-
-    if ":" in new_ip:
-        # IPv6 地址需要用方括号包裹
-        new_netloc = f"[{new_ip}]:{port}" if port else f"[{new_ip}]"
-    else:
-        new_netloc = f"{new_ip}:{port}" if port else new_ip
-
-    return urlunparse((parsed.scheme, new_netloc, parsed.path, parsed.params, parsed.query, parsed.fragment))
-
-
 def _ensure_mapping(value, *, label: str):
     if not isinstance(value, dict):
         raise serializers.ValidationError(f"{label} 必须是对象。")
     return value
 
 
-def validate_kubeconfig(raw_kubeconfig: str, *, server_override: str | None = None) -> KubeconfigInspection:
+def validate_kubeconfig(raw_kubeconfig: str) -> KubeconfigInspection:
     try:
         payload = yaml.safe_load(raw_kubeconfig)
     except yaml.YAMLError as exc:
@@ -97,26 +84,7 @@ def validate_kubeconfig(raw_kubeconfig: str, *, server_override: str | None = No
             raise serializers.ValidationError("当前版本默认拒绝引用本地 certificate-authority 文件路径的 kubeconfig。")
 
         original_server = cluster_data.get("server", "")
-
-        # 如果提供了 server_override（用户手动指定的 IP 地址），
-        # 检测 server URL 中是否包含非 IP 的主机名，若是则替换
-        if server_override:
-            parsed = urlparse(original_server)
-            hostname = parsed.hostname
-            if hostname and not _is_ip_address(hostname):
-                resolved_server = _replace_server_host(original_server, server_override)
-                cluster_data["server"] = resolved_server
-                logger.info(
-                    "kubeconfig 集群 %s 的 server 地址已从 %s 替换为 %s",
-                    cluster_name,
-                    original_server,
-                    resolved_server,
-                )
-                cluster_servers[cluster_name] = resolved_server
-            else:
-                cluster_servers[cluster_name] = original_server
-        else:
-            cluster_servers[cluster_name] = original_server
+        cluster_servers[cluster_name] = original_server
 
     current_context_name = payload.get("current-context") or contexts[0].get("name")
     current_context = next(
@@ -140,4 +108,25 @@ def validate_kubeconfig(raw_kubeconfig: str, *, server_override: str | None = No
         user_count=len(users),
         context_count=len(contexts),
         fingerprint=hashlib.sha256(normalized.encode("utf-8")).hexdigest(),
+    )
+
+
+def load_local_kubeconfig() -> LocalKubeconfigResult:
+    kubeconfig_path = Path.home() / ".kube" / "config"
+
+    if not kubeconfig_path.exists():
+        raise serializers.ValidationError(f"未找到本地 kubeconfig 文件：{kubeconfig_path}")
+    if not kubeconfig_path.is_file():
+        raise serializers.ValidationError(f"本地 kubeconfig 路径不是文件：{kubeconfig_path}")
+
+    try:
+        raw_kubeconfig = kubeconfig_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise serializers.ValidationError(f"读取本地 kubeconfig 失败：{exc}") from exc
+
+    inspection = validate_kubeconfig(raw_kubeconfig)
+    return LocalKubeconfigResult(
+        source_path=str(kubeconfig_path),
+        kubeconfig=raw_kubeconfig,
+        inspection=inspection,
     )

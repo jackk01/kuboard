@@ -1,14 +1,13 @@
 import { defineStore } from 'pinia'
 
 import { apiRequest } from '../lib/api'
-import type { Cluster } from '../types'
+import type { Cluster, LocalKubeconfigPayload } from '../types'
 
 interface ClusterPayload {
   name: string
   environment: string
   description: string
   kubeconfig: string
-  server_override?: string
 }
 
 export const useClusterStore = defineStore('clusters', {
@@ -44,6 +43,10 @@ export const useClusterStore = defineStore('clusters', {
       } finally {
         this.saving = false
       }
+    },
+
+    async fetchLocalKubeconfig() {
+      return apiRequest<LocalKubeconfigPayload>('/api/v1/clusters/local-kubeconfig')
     },
 
     async healthCheck(clusterId: string) {

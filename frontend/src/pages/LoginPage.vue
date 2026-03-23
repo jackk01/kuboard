@@ -36,7 +36,7 @@ async function submit() {
       <section class="auth-panel">
         <header class="auth-heading">
           <h1 class="page-title auth-title">Kuboard</h1>
-          <p class="auth-subtitle">多集群管理面板</p>
+          <p class="auth-subtitle">多集群管理</p>
         </header>
         <div class="form-grid auth-form">
           <div class="auth-field-row">

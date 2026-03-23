@@ -73,11 +73,9 @@ class ClusterImportSerializer(serializers.Serializer):
     environment = serializers.ChoiceField(choices=ENVIRONMENT_CHOICES, default="dev")
     description = serializers.CharField(max_length=255, allow_blank=True, required=False)
     kubeconfig = serializers.CharField()
-    server_override = serializers.IPAddressField(required=False, allow_blank=True, protocol="both")
 
     def validate(self, attrs):
-        server_override = attrs.get("server_override") or None
-        inspection = validate_kubeconfig(attrs["kubeconfig"], server_override=server_override)
+        inspection = validate_kubeconfig(attrs["kubeconfig"])
         self.context["inspection"] = inspection
         return attrs
 

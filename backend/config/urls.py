@@ -2,7 +2,7 @@ from django.contrib import admin
 from django.urls import path
 
 from apps.audit.api import AuditEventListView
-from apps.clusters.api import ClusterDetailView, ClusterHealthCheckView, ClusterListCreateView
+from apps.clusters.api import ClusterDetailView, ClusterHealthCheckView, ClusterListCreateView, LocalKubeconfigView
 from apps.iam.api import (
     AdminUserDetailView,
     AdminUserGroupDetailView,
@@ -61,6 +61,7 @@ urlpatterns = [
         ClusterImpersonationConfigView.as_view(),
         name="rbac-cluster-impersonation",
     ),
+    path("api/v1/clusters/local-kubeconfig", LocalKubeconfigView.as_view(), name="cluster-local-kubeconfig"),
     path("api/v1/clusters", ClusterListCreateView.as_view(), name="cluster-list"),
     path("api/v1/clusters/<uuid:pk>", ClusterDetailView.as_view(), name="cluster-detail"),
     path("api/v1/clusters/<uuid:pk>/discovery", ClusterDiscoveryView.as_view(), name="cluster-discovery"),

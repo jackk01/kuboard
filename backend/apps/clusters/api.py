@@ -7,6 +7,7 @@ from apps.k8s_gateway.services import KubernetesAPIError, KubernetesClient
 
 from .models import Cluster
 from .serializers import ClusterImportSerializer, ClusterSerializer, ClusterUpdateSerializer
+from .services import load_local_kubeconfig
 
 
 def _sync_discovery_after_health_check(client: KubernetesClient, cluster: Cluster) -> dict:
@@ -45,6 +46,23 @@ class ClusterListCreateView(generics.ListCreateAPIView):
                 cluster.health.save(update_fields=["message", "last_checked_at"])
         response_serializer = ClusterSerializer(cluster)
         return Response(response_serializer.data, status=status.HTTP_201_CREATED)
+
+
+class LocalKubeconfigView(APIView):
+    def get(self, request):
+        result = load_local_kubeconfig()
+        return Response(
+            {
+                "source_path": result.source_path,
+                "kubeconfig": result.kubeconfig,
+                "current_context": result.inspection.current_context,
+                "server": result.inspection.server,
+                "cluster_count": result.inspection.cluster_count,
+                "user_count": result.inspection.user_count,
+                "context_count": result.inspection.context_count,
+                "fingerprint": result.inspection.fingerprint,
+            }
+        )
 
 
 class ClusterDetailView(generics.RetrieveUpdateDestroyAPIView):

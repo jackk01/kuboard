@@ -1,14 +1,14 @@
 backend-install:
-	cd backend && python -m venv venv && venv/bin/pip install -r requirements.txt
+	cd backend && python -m venv venv && source venv/bin/activate && pip install -r requirements.txt
 
 backend-migrate:
-	cd backend && venv/bin/python manage.py migrate
+	cd backend && source venv/bin/activate && python manage.py migrate
 
 backend-bootstrap:
-	cd backend && venv/bin/python manage.py bootstrap_kuboard
+	cd backend && source venv/bin/activate && python manage.py bootstrap_kuboard
 
 backend-dev:
-	cd backend && venv/bin/python manage.py runserver
+	cd backend && source venv/bin/activate && python manage.py runserver
 
 frontend-install:
 	cd frontend && npm install

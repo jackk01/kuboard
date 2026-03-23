@@ -1917,9 +1917,9 @@ watch(
       <div class="section-head">
         <div>
           <div class="eyebrow" style="color: var(--kb-primary-deep)">Explorer</div>
-          <h2 class="page-title">真实资源 MVP</h2>
+          <h2 class="page-title">资源浏览</h2>
           <p class="page-description">
-            这里已经接上后端 Discovery 和通用资源列表接口。导入真实可访问的 kubeconfig 后，可以浏览集群内的常见资源。
+            这里已经接上后端 Discovery 和通用资源列表接口。导入可访问的 kubeconfig 后，可以浏览集群内的常见资源。
           </p>
         </div>
         <button class="button button-secondary" :disabled="loadingDiscovery" @click="loadDiscovery">
@@ -1959,7 +1959,7 @@ watch(
         </label>
 
         <label class="field-label">
-          Namespace
+          名称空间
           <select v-model="selectedNamespace" :disabled="!selectedResource?.namespaced">
             <option value="">cluster-scoped</option>
             <option v-for="namespace in namespaceOptions" :key="namespace.name" :value="namespace.name">
@@ -2010,20 +2010,8 @@ watch(
 
       <div class="cluster-summary-grid explorer-summary-grid" style="margin-top: 12px">
         <article class="cluster-summary-card">
-          <span>API Groups</span>
-          <strong>{{ explorerSummary.groups }}</strong>
-        </article>
-        <article class="cluster-summary-card">
-          <span>当前资源类型</span>
-          <strong class="is-ready">{{ explorerSummary.resources }}</strong>
-        </article>
-        <article class="cluster-summary-card">
-          <span>Namespace</span>
+          <span>名称空间</span>
           <strong class="is-pending">{{ explorerSummary.namespaces }}</strong>
-        </article>
-        <article class="cluster-summary-card">
-          <span>列表项</span>
-          <strong class="is-error">{{ explorerSummary.listed }}</strong>
         </article>
       </div>
 
@@ -2057,7 +2045,7 @@ watch(
           <thead>
             <tr>
               <th>Name</th>
-              <th>Namespace</th>
+              <th>名称空间</th>
               <th>Status</th>
               <th>Age</th>
             </tr>
@@ -2156,7 +2144,7 @@ watch(
           <span class="pill" v-if="isCreating">Mode: create-draft</span>
           <span class="pill">Kind: {{ selectedDetail.resource.kind }}</span>
           <span class="pill">Name: {{ selectedDetail.metadata.name || '--draft--' }}</span>
-          <span class="pill" v-if="selectedDetail.metadata.namespace">Namespace: {{ selectedDetail.metadata.namespace }}</span>
+          <span class="pill" v-if="selectedDetail.metadata.namespace">名称空间: {{ selectedDetail.metadata.namespace }}</span>
           <span class="pill">RV: {{ selectedDetail.metadata.resource_version || '--' }}</span>
         </div>
 
@@ -2294,7 +2282,7 @@ watch(
                 <span class="muted">{{ formatWatchTime(event.received_at) }}</span>
               </div>
               <div class="muted" style="margin-top: 8px">
-                {{ event.metadata.kind || selectedDetail.resource.kind }} · namespace {{ event.metadata.namespace || '--' }} · rv
+                {{ event.metadata.kind || selectedDetail.resource.kind }} · 名称空间 {{ event.metadata.namespace || '--' }} · rv
                 {{ event.metadata.resource_version || '--' }}
               </div>
             </div>
