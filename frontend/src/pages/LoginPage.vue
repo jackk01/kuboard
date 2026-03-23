@@ -92,10 +92,10 @@ async function submit() {
 
 .auth-field-row input {
   width: 100%;
-  padding: 13px 14px;
+  padding: 10px 14px;
   border: 1px solid var(--kb-border);
   border-radius: var(--kb-radius-sm);
-  background: rgba(255, 255, 255, 0.92);
+  background: #fff;
   color: var(--kb-text);
   text-align: center;
   transition:
@@ -106,8 +106,8 @@ async function submit() {
 
 .auth-field-row input:focus {
   outline: none;
-  border-color: rgba(14, 165, 164, 0.4);
-  box-shadow: 0 0 0 4px rgba(14, 165, 164, 0.12);
+  border-color: rgba(35, 72, 131, 0.5);
+  box-shadow: 0 0 0 3px rgba(35, 72, 131, 0.12);
 }
 
 .auth-field-row input::placeholder {

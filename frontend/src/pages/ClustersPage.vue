@@ -185,6 +185,10 @@ async function runBatchDiscovery() {
 function handleShellCommand(event: Event) {
   const customEvent = event as CustomEvent<{ action?: string }>
   const action = customEvent.detail?.action
+  if (action === 'clusters.open_import') {
+    importPanelOpen.value = true
+    return
+  }
   if (action === 'clusters.health_all') {
     void runBatchHealthCheck()
     return
@@ -321,7 +325,7 @@ async function confirmDelete() {
       <div class="section-head">
         <div>
           <h2 class="page-title">集群控制台</h2>
-          <p>参考 Kuboard 面板风格重构：高密度总览 + 快速操作 + 分层详情。</p>
+          <p>Kuboard 风格布局：状态总览、快速筛选、批量运维与导入。</p>
         </div>
         <div class="button-row">
           <button class="button button-secondary" @click="clusterStore.fetchClusters">刷新列表</button>
@@ -367,7 +371,7 @@ async function confirmDelete() {
           <option v-for="env in environments" :key="env" :value="env">{{ env }}</option>
         </select>
         <button class="button button-secondary" @click="importPanelOpen = !importPanelOpen">
-          {{ importPanelOpen ? '收起导入面板' : '展开导入面板' }}
+          {{ importPanelOpen ? '隐藏导入面板' : '显示导入面板' }}
         </button>
       </div>
 
