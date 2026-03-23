@@ -41,3 +41,5 @@ class SystemSettingsAPITests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()["features"]["stream_hub"])
+        self.assertIn("pending", response.json()["clusters"])
+        self.assertIn("error", response.json()["clusters"])

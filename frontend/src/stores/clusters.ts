@@ -16,6 +16,8 @@ export const useClusterStore = defineStore('clusters', {
     items: [] as Cluster[],
     loading: false,
     saving: false,
+    checkingIds: [] as string[],
+    discoveringIds: [] as string[],
     updatingIds: [] as string[],
     deletingIds: [] as string[],
   }),
@@ -45,10 +47,26 @@ export const useClusterStore = defineStore('clusters', {
     },
 
     async healthCheck(clusterId: string) {
-      const updated = await apiRequest<Cluster>(`/api/v1/clusters/${clusterId}/health-check`, {
-        method: 'POST',
-      })
-      this.items = this.items.map((item) => (item.id === clusterId ? updated : item))
+      this.checkingIds = [...this.checkingIds, clusterId]
+      try {
+        const updated = await apiRequest<Cluster>(`/api/v1/clusters/${clusterId}/health-check`, {
+          method: 'POST',
+        })
+        this.items = this.items.map((item) => (item.id === clusterId ? updated : item))
+      } finally {
+        this.checkingIds = this.checkingIds.filter((id) => id !== clusterId)
+      }
+    },
+
+    async syncDiscovery(clusterId: string) {
+      this.discoveringIds = [...this.discoveringIds, clusterId]
+      try {
+        await apiRequest(`/api/v1/clusters/${clusterId}/discovery`)
+        const refreshed = await apiRequest<Cluster>(`/api/v1/clusters/${clusterId}`)
+        this.items = this.items.map((item) => (item.id === clusterId ? refreshed : item))
+      } finally {
+        this.discoveringIds = this.discoveringIds.filter((id) => id !== clusterId)
+      }
     },
 
     async updateCluster(

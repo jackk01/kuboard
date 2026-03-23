@@ -17,3 +17,4 @@ backend/.env
 frontend/.env
 backups/
 tmp-backups/
+kuboard-ui/

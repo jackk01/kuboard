@@ -65,6 +65,11 @@ class DashboardSummaryView(APIView):
         cluster_summary = Cluster.objects.aggregate(
             total=Count("id"),
             ready=Count("id", filter=Q(status="ready")),
+            pending=Count("id", filter=Q(status="pending")),
+            error=Count("id", filter=Q(status="error")),
+            healthy=Count("id", filter=Q(health_state="healthy")),
+            degraded=Count("id", filter=Q(health_state="degraded")),
+            unknown=Count("id", filter=Q(health_state="unknown")),
         )
         recent_audit_count = AuditEvent.objects.count()
         recent_events = (

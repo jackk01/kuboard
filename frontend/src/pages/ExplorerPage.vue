@@ -108,6 +108,183 @@ const selectedResource = computed(() =>
   resources.value.find((resource) => resource.name === selectedResourceName.value) ?? null,
 )
 
+const commonResourcePresets = [
+  {
+    key: 'deployments',
+    label: 'Deployment',
+    labelZh: '部署',
+    category: 'workload',
+    categoryZh: '工作负载',
+    icon: 'WL',
+    group: 'apps',
+    version: 'v1',
+    resource: 'deployments',
+  },
+  {
+    key: 'statefulsets',
+    label: 'StatefulSet',
+    labelZh: '有状态应用',
+    category: 'workload',
+    categoryZh: '工作负载',
+    icon: 'WL',
+    group: 'apps',
+    version: 'v1',
+    resource: 'statefulsets',
+  },
+  {
+    key: 'daemonsets',
+    label: 'DaemonSet',
+    labelZh: '守护进程集',
+    category: 'workload',
+    categoryZh: '工作负载',
+    icon: 'WL',
+    group: 'apps',
+    version: 'v1',
+    resource: 'daemonsets',
+  },
+  {
+    key: 'pods',
+    label: 'Pod',
+    labelZh: 'Pod 实例',
+    category: 'workload',
+    categoryZh: '工作负载',
+    icon: 'WL',
+    group: 'core',
+    version: 'v1',
+    resource: 'pods',
+  },
+  {
+    key: 'jobs',
+    label: 'Job',
+    labelZh: '一次性任务',
+    category: 'workload',
+    categoryZh: '工作负载',
+    icon: 'WL',
+    group: 'batch',
+    version: 'v1',
+    resource: 'jobs',
+  },
+  {
+    key: 'cronjobs',
+    label: 'CronJob',
+    labelZh: '定时任务',
+    category: 'workload',
+    categoryZh: '工作负载',
+    icon: 'WL',
+    group: 'batch',
+    version: 'v1',
+    resource: 'cronjobs',
+  },
+  {
+    key: 'services',
+    label: 'Service',
+    labelZh: '服务发现',
+    category: 'network',
+    categoryZh: '网络访问',
+    icon: 'NW',
+    group: 'core',
+    version: 'v1',
+    resource: 'services',
+  },
+  {
+    key: 'ingresses',
+    label: 'Ingress',
+    labelZh: '入口路由',
+    category: 'network',
+    categoryZh: '网络访问',
+    icon: 'NW',
+    group: 'networking.k8s.io',
+    version: 'v1',
+    resource: 'ingresses',
+  },
+  {
+    key: 'configmaps',
+    label: 'ConfigMap',
+    labelZh: '配置',
+    category: 'config',
+    categoryZh: '配置与密钥',
+    icon: 'CF',
+    group: 'core',
+    version: 'v1',
+    resource: 'configmaps',
+  },
+  {
+    key: 'secrets',
+    label: 'Secret',
+    labelZh: '密钥',
+    category: 'config',
+    categoryZh: '配置与密钥',
+    icon: 'CF',
+    group: 'core',
+    version: 'v1',
+    resource: 'secrets',
+  },
+] as const
+
+const commonResourceItems = computed(() =>
+  commonResourcePresets.map((preset) => {
+    const groupKey = `${preset.group}::${preset.version}`
+    const group = discovery.value?.groups.find(
+      (item) => item.group === preset.group && item.version === preset.version,
+    )
+    const matchedResource = group?.resources.find((item) => item.name === preset.resource)
+    return {
+      ...preset,
+      groupKey,
+      available: Boolean(matchedResource),
+      namespaced: Boolean(matchedResource?.namespaced),
+      active: selectedGroupKey.value === groupKey && selectedResourceName.value === preset.resource,
+    }
+  }),
+)
+
+const availableCommonResources = computed(() =>
+  commonResourceItems.value.filter((item) => item.available),
+)
+
+const selectedQuickCategory = ref<'workload' | 'network' | 'config'>('workload')
+
+const groupedCommonResources = computed(() => {
+  const order = ['workload', 'network', 'config'] as const
+  return order.reduce<Array<{
+    category: (typeof order)[number]
+    title: string
+    items: typeof availableCommonResources.value
+  }>>((acc, category) => {
+      const items = availableCommonResources.value.filter((item) => item.category === category)
+      if (!items.length) return acc
+      acc.push({
+        category,
+        title: items[0].categoryZh,
+        items,
+      })
+      return acc
+    }, [])
+})
+
+const quickCategoryTabs = computed(() =>
+  groupedCommonResources.value.map((group) => ({
+    category: group.category,
+    title: group.title,
+    count: group.items.length,
+  })),
+)
+
+const quickCategoryResources = computed(
+  () => groupedCommonResources.value.find((group) => group.category === selectedQuickCategory.value)?.items ?? [],
+)
+
+const unavailableCommonResources = computed(() =>
+  commonResourceItems.value.filter((item) => !item.available).map((item) => `${item.labelZh}(${item.label})`),
+)
+
+const explorerSummary = computed(() => ({
+  groups: discovery.value?.groups.length ?? 0,
+  resources: resources.value.length,
+  namespaces: namespaceOptions.value.length,
+  listed: resourceList.value?.metadata.count ?? resourceList.value?.items.length ?? 0,
+}))
+
 const namespaceOptions = computed(() => discovery.value?.namespaces ?? [])
 const permissionLabels: Record<string, string> = {
   get: '读取',
@@ -492,6 +669,24 @@ function schemaSourceLabel(source?: string) {
   if (source === 'openapi-v3') return 'OpenAPI v3'
   if (source === 'inferred') return '样本推断'
   return '--'
+}
+
+function activateCommonResource(item: {
+  available: boolean
+  groupKey: string
+  resource: string
+  namespaced: boolean
+}) {
+  if (!item.available) {
+    return
+  }
+  selectedGroupKey.value = item.groupKey
+  selectedResourceName.value = item.resource
+  if (!item.namespaced) {
+    selectedNamespace.value = ''
+  } else if (!selectedNamespace.value) {
+    selectedNamespace.value = discovery.value?.context.default_namespace || 'default'
+  }
 }
 
 function buildResourceApiVersion() {
@@ -1693,6 +1888,19 @@ watch(selectedGroupKey, () => {
 })
 
 watch(
+  () => quickCategoryTabs.value,
+  (tabs) => {
+    if (!tabs.length) {
+      return
+    }
+    if (!tabs.some((item) => item.category === selectedQuickCategory.value)) {
+      selectedQuickCategory.value = tabs[0].category
+    }
+  },
+  { immediate: true },
+)
+
+watch(
   [selectedGroupKey, selectedResourceName, selectedNamespace],
   async ([groupKey, resourceName]) => {
     if (!groupKey || !resourceName) {
@@ -1705,7 +1913,7 @@ watch(
 
 <template>
   <div class="page-grid">
-    <section class="hero-panel">
+    <section class="hero-panel explorer-hero-panel">
       <div class="section-head">
         <div>
           <div class="eyebrow" style="color: var(--kb-primary-deep)">Explorer</div>
@@ -1761,6 +1969,64 @@ watch(
         </label>
       </div>
 
+      <div class="explorer-quick-surface">
+        <div class="section-head" style="margin-bottom: 10px">
+          <div>
+            <h2>常用资源一键直达</h2>
+            <p>不需要理解 API Group，直接点击资源名称即可查看。</p>
+          </div>
+        </div>
+        <div class="explorer-quick-tabs">
+          <button
+            v-for="tab in quickCategoryTabs"
+            :key="tab.category"
+            class="button explorer-quick-tab"
+            :class="selectedQuickCategory === tab.category ? 'explorer-quick-tab-active' : 'button-secondary'"
+            @click="selectedQuickCategory = tab.category"
+          >
+            {{ tab.title }} ({{ tab.count }})
+          </button>
+        </div>
+        <div class="explorer-quick-grid" style="margin-top: 10px">
+          <button
+            v-for="item in quickCategoryResources"
+            :key="item.key"
+            class="button explorer-quick-btn"
+            :class="item.active ? 'explorer-quick-btn-active' : 'button-secondary'"
+            @click="activateCommonResource(item)"
+          >
+            <span class="explorer-quick-icon">{{ item.icon }}</span>
+            <span class="explorer-quick-name">{{ item.labelZh }}</span>
+            <span class="explorer-quick-sub">{{ item.label }}</span>
+          </button>
+          <div v-if="!quickCategoryResources.length" class="helper-text">
+            当前分组没有可用资源，请切换其他分组。
+          </div>
+        </div>
+        <div v-if="unavailableCommonResources.length" class="helper-text" style="margin-top: 8px">
+          当前集群未发现：{{ unavailableCommonResources.join('、') }}
+        </div>
+      </div>
+
+      <div class="cluster-summary-grid explorer-summary-grid" style="margin-top: 12px">
+        <article class="cluster-summary-card">
+          <span>API Groups</span>
+          <strong>{{ explorerSummary.groups }}</strong>
+        </article>
+        <article class="cluster-summary-card">
+          <span>当前资源类型</span>
+          <strong class="is-ready">{{ explorerSummary.resources }}</strong>
+        </article>
+        <article class="cluster-summary-card">
+          <span>Namespace</span>
+          <strong class="is-pending">{{ explorerSummary.namespaces }}</strong>
+        </article>
+        <article class="cluster-summary-card">
+          <span>列表项</span>
+          <strong class="is-error">{{ explorerSummary.listed }}</strong>
+        </article>
+      </div>
+
       <div v-if="discoveryError" class="error-text" style="margin-top: 14px">{{ discoveryError }}</div>
       <div v-else-if="discovery" class="button-row" style="margin-top: 16px">
         <StatusBadge :value="clusterStore.items.find((cluster) => cluster.id === selectedClusterId)?.status || 'ready'" />
@@ -1770,8 +2036,8 @@ watch(
       </div>
     </section>
 
-    <section class="split-detail">
-      <article class="surface-card">
+    <section class="split-detail explorer-split">
+      <article class="surface-card explorer-list-panel">
         <div class="section-head">
           <div>
             <h2>资源列表</h2>
@@ -1826,7 +2092,7 @@ watch(
         </div>
       </article>
 
-      <article class="surface-card">
+      <article class="surface-card explorer-detail-panel">
         <div class="section-head">
           <div>
             <h2>详情与 YAML</h2>

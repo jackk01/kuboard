@@ -77,6 +77,11 @@ export interface DashboardSummary {
   clusters: {
     total: number
     ready: number
+    pending: number
+    error: number
+    healthy: number
+    degraded: number
+    unknown: number
   }
   recent_audit_count: number
   recent_events: Array<{
@@ -84,6 +89,11 @@ export interface DashboardSummary {
     status: string
     cluster__name?: string
   }>
+  features: {
+    sqlite_mode: boolean
+    rbac_bridge: boolean
+    stream_hub: boolean
+  }
 }
 
 export interface DiscoveryResource {

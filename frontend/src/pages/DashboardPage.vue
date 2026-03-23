@@ -1,69 +1,197 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { RouterLink } from 'vue-router'
 
-import StatCard from '../components/StatCard.vue'
 import StatusBadge from '../components/StatusBadge.vue'
-import { apiRequest } from '../lib/api'
+import { ApiError, apiRequest } from '../lib/api'
 import type { DashboardSummary } from '../types'
 
-const loading = ref(true)
-const summary = ref<DashboardSummary | null>(null)
+interface ReadinessPayload {
+  status: string
+  checks: {
+    database: { ok: boolean; message: string }
+    cache: { ok: boolean; message: string }
+  }
+}
 
-onMounted(async () => {
+const loading = ref(true)
+const readinessLoading = ref(true)
+const summary = ref<DashboardSummary | null>(null)
+const readiness = ref<ReadinessPayload | null>(null)
+const errorMessage = ref('')
+
+const clusterStats = computed(() => {
+  const clusters = summary.value?.clusters
+  return {
+    total: clusters?.total ?? 0,
+    ready: clusters?.ready ?? 0,
+    pending: clusters?.pending ?? 0,
+    error: clusters?.error ?? 0,
+    healthy: clusters?.healthy ?? 0,
+    degraded: clusters?.degraded ?? 0,
+    unknown: clusters?.unknown ?? 0,
+  }
+})
+
+const platformStatus = computed(() => {
+  if (readinessLoading.value) return 'unknown'
+  if (readiness.value?.status === 'ok') return 'ready'
+  return 'degraded'
+})
+
+const featureItems = computed(() => {
+  const features = summary.value?.features
+  return [
+    { label: 'SQLite 模式', enabled: Boolean(features?.sqlite_mode) },
+    { label: 'RBAC Bridge', enabled: Boolean(features?.rbac_bridge) },
+    { label: 'Stream Hub', enabled: Boolean(features?.stream_hub) },
+  ]
+})
+
+async function fetchDashboard() {
+  errorMessage.value = ''
+  loading.value = true
+  readinessLoading.value = true
   try {
-    summary.value = await apiRequest<DashboardSummary>('/api/v1/dashboard/summary')
+    const [summaryPayload, readinessPayload] = await Promise.all([
+      apiRequest<DashboardSummary>('/api/v1/dashboard/summary'),
+      apiRequest<ReadinessPayload>('/api/v1/health/ready', { skipAuth: true }),
+    ])
+    summary.value = summaryPayload
+    readiness.value = readinessPayload
+  } catch (error) {
+    if (error instanceof ApiError) {
+      errorMessage.value = error.message
+    } else {
+      errorMessage.value = '加载总览失败，请稍后重试。'
+    }
   } finally {
     loading.value = false
+    readinessLoading.value = false
   }
+}
+
+onMounted(async () => {
+  await fetchDashboard()
 })
 </script>
 
 <template>
   <div class="page-grid">
-    <section class="hero-panel">
+    <section class="hero-panel dashboard-hero-panel">
       <div class="section-head">
         <div>
-          <h2 class="page-title">总览</h2>
+          <h2 class="page-title">平台总览</h2>
+          <p>与集群页统一的面板化架构：核心状态、可操作入口、最近活动。</p>
         </div>
-        <StatusBadge :value="(summary?.clusters.ready ?? 0) > 0 ? 'ready' : 'unknown'" />
+        <div class="button-row">
+          <button class="button button-secondary" :disabled="loading" @click="fetchDashboard">刷新总览</button>
+          <RouterLink class="button button-primary" :to="{ name: 'clusters' }">进入集群</RouterLink>
+        </div>
       </div>
 
-      <div class="stat-grid">
-        <StatCard
-          label="已纳管集群"
-          :value="summary?.clusters.total ?? '--'"
-          caption="所有已导入的 Kubernetes 集群总数"
-        />
-        <StatCard
-          label="Ready 集群"
-          :value="summary?.clusters.ready ?? '--'"
-          caption="本地校验通过并已进入可用状态"
-        />
-        <StatCard
-          label="审计事件"
-          :value="summary?.recent_audit_count ?? '--'"
-          caption="当前数据库中的审计事件数量"
-        />
-        <StatCard
-          label="最近事件"
-          :value="summary?.recent_events.length ?? '--'"
-          caption="最近写入并展示在下方列表的审计事件数"
-        />
+      <div class="cluster-summary-grid dashboard-summary-grid">
+        <article class="cluster-summary-card">
+          <span>已纳管</span>
+          <strong>{{ clusterStats.total }}</strong>
+        </article>
+        <article class="cluster-summary-card">
+          <span>Ready</span>
+          <strong class="is-ready">{{ clusterStats.ready }}</strong>
+        </article>
+        <article class="cluster-summary-card">
+          <span>Pending</span>
+          <strong class="is-pending">{{ clusterStats.pending }}</strong>
+        </article>
+        <article class="cluster-summary-card">
+          <span>Error</span>
+          <strong class="is-error">{{ clusterStats.error }}</strong>
+        </article>
       </div>
     </section>
 
-    <section class="page-grid">
-      <article class="surface-card">
-        <div class="section-head">
+    <section class="surface-card dashboard-workspace">
+      <div v-if="errorMessage" class="error-text">{{ errorMessage }}</div>
+
+      <div class="dual-grid dashboard-top-grid">
+        <article class="dashboard-panel">
+          <div class="section-head" style="margin-bottom: 10px">
+            <div>
+              <h2>平台运行态</h2>
+              <p>后端就绪状态与集群健康分布。</p>
+            </div>
+            <StatusBadge :value="platformStatus" />
+          </div>
+
+          <div class="dashboard-health-grid">
+            <div class="dashboard-health-item">
+              <span>健康</span>
+              <strong>{{ clusterStats.healthy }}</strong>
+            </div>
+            <div class="dashboard-health-item">
+              <span>退化</span>
+              <strong class="is-error">{{ clusterStats.degraded }}</strong>
+            </div>
+            <div class="dashboard-health-item">
+              <span>未知</span>
+              <strong class="is-pending">{{ clusterStats.unknown }}</strong>
+            </div>
+          </div>
+
+          <div class="dashboard-check-row">
+            <span>Database</span>
+            <StatusBadge :value="readiness?.checks.database.ok ? 'ready' : 'error'" />
+          </div>
+          <div class="dashboard-check-row">
+            <span>Cache</span>
+            <StatusBadge :value="readiness?.checks.cache.ok ? 'ready' : 'error'" />
+          </div>
+        </article>
+
+        <article class="dashboard-panel">
+          <div class="section-head" style="margin-bottom: 10px">
+            <div>
+              <h2>快捷入口</h2>
+              <p>高频运维动作直达。</p>
+            </div>
+          </div>
+
+          <div class="dashboard-action-grid">
+            <RouterLink class="button button-secondary" :to="{ name: 'clusters' }">集群管理</RouterLink>
+            <RouterLink class="button button-secondary" :to="{ name: 'explorer' }">资源浏览</RouterLink>
+            <RouterLink class="button button-secondary" :to="{ name: 'audit' }">审计中心</RouterLink>
+            <RouterLink class="button button-secondary" :to="{ name: 'settings' }">系统设置</RouterLink>
+          </div>
+
+          <div class="pill-row" style="margin-top: 12px">
+            <span
+              v-for="feature in featureItems"
+              :key="feature.label"
+              class="pill"
+              :class="feature.enabled ? 'dashboard-pill-enabled' : 'dashboard-pill-disabled'"
+            >
+              {{ feature.label }}: {{ feature.enabled ? 'on' : 'off' }}
+            </span>
+          </div>
+        </article>
+      </div>
+
+      <article class="dashboard-panel">
+        <div class="section-head" style="margin-bottom: 10px">
           <div>
             <h2>最近活动</h2>
-            <p>这里聚合了最近写入的审计事件，后续可以继续扩展到日志和告警。</p>
+            <p>来自审计事件流，帮助快速定位最近变更。</p>
           </div>
+          <span class="tag">{{ summary?.recent_audit_count ?? 0 }} 条</span>
         </div>
 
-        <div v-if="loading" class="helper-text">正在加载摘要...</div>
+        <div v-if="loading" class="empty-state">正在加载总览...</div>
         <div v-else-if="summary?.recent_events.length" class="event-list">
-          <div v-for="event in summary.recent_events" :key="`${event.event_type}-${event.cluster__name}`" class="event-item">
+          <div
+            v-for="event in summary.recent_events"
+            :key="`${event.event_type}-${event.cluster__name || 'system'}`"
+            class="event-item"
+          >
             <h3>{{ event.event_type }}</h3>
             <div class="button-row">
               <StatusBadge :value="event.status" />
@@ -71,7 +199,7 @@ onMounted(async () => {
             </div>
           </div>
         </div>
-        <div v-else class="empty-state">还没有审计事件，导入一个集群后这里就会开始有数据。</div>
+        <div v-else class="empty-state">还没有审计事件，导入并操作一个集群后这里会开始更新。</div>
       </article>
     </section>
   </div>
