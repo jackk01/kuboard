@@ -72,6 +72,21 @@ onMounted(async () => {
   await clusterStore.fetchClusters()
 })
 
+async function runHealthCheck(clusterId: string) {
+  errorMessage.value = ''
+  feedback.value = ''
+  try {
+    await clusterStore.healthCheck(clusterId)
+    feedback.value = '健康检查已完成。'
+  } catch (error) {
+    if (error instanceof ApiError) {
+      errorMessage.value = error.message
+      return
+    }
+    errorMessage.value = '健康检查失败，请稍后重试。'
+  }
+}
+
 async function importCluster() {
   errorMessage.value = ''
   feedback.value = ''
@@ -297,7 +312,7 @@ async function confirmDelete() {
           </div>
 
           <div class="button-row" style="margin-top: 16px">
-            <button class="button button-secondary" @click="clusterStore.healthCheck(cluster.id)">
+            <button class="button button-secondary" @click="runHealthCheck(cluster.id)">
               重新健康检查
             </button>
             <button class="button button-secondary" @click="startEdit(cluster)">

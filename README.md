@@ -70,17 +70,17 @@ docker compose up -d redis
 
 ```bash
 cd backend
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-.venv/bin/python manage.py migrate
-.venv/bin/python manage.py bootstrap_kuboard
+python3 -m venv venv
+venv/bin/pip install -r requirements.txt
+venv/bin/python manage.py migrate
+venv/bin/python manage.py bootstrap_kuboard
 ```
 
 3. 启动后端
 
 ```bash
 cd backend
-.venv/bin/python manage.py runserver
+venv/bin/python manage.py runserver
 ```
 
 4. 启动前端

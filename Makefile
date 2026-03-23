@@ -1,14 +1,14 @@
 backend-install:
-	cd backend && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+	cd backend && python -m venv venv && venv/bin/pip install -r requirements.txt
 
 backend-migrate:
-	cd backend && .venv/bin/python manage.py migrate
+	cd backend && venv/bin/python manage.py migrate
 
 backend-bootstrap:
-	cd backend && .venv/bin/python manage.py bootstrap_kuboard
+	cd backend && venv/bin/python manage.py bootstrap_kuboard
 
 backend-dev:
-	cd backend && .venv/bin/python manage.py runserver
+	cd backend && venv/bin/python manage.py runserver
 
 frontend-install:
 	cd frontend && npm install
@@ -35,11 +35,11 @@ prod-down:
 	docker compose -f docker-compose.prod.yml down
 
 sqlite-backup:
-	python3 ./scripts/sqlite_backup.py
+	python ./scripts/sqlite_backup.py
 
 sqlite-restore:
 	@test -n "$(BACKUP)" || (echo "Usage: make sqlite-restore BACKUP=./backups/file.sqlite3 [TARGET=backend/db.sqlite3] [FORCE=1]"; exit 1)
-	python3 ./scripts/sqlite_restore.py "$(BACKUP)" "$(if $(TARGET),$(TARGET),backend/db.sqlite3)" $(if $(FORCE),--force,)
+	python ./scripts/sqlite_restore.py "$(BACKUP)" "$(if $(TARGET),$(TARGET),backend/db.sqlite3)" $(if $(FORCE),--force,)
 
 helm-lint:
 	helm lint deploy/helm/kuboard

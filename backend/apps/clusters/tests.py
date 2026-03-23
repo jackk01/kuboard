@@ -5,7 +5,15 @@ from rest_framework.authtoken.models import Token
 from rest_framework.exceptions import ValidationError
 from rest_framework.test import APIClient
 
-from apps.clusters.models import Cluster, ClusterCapability, ClusterCredential, ClusterHealthStatus, ClusterStatus
+from apps.clusters.models import (
+    Cluster,
+    ClusterCapability,
+    ClusterCredential,
+    ClusterHealthState,
+    ClusterHealthStatus,
+    ClusterStatus,
+)
+from apps.k8s_gateway.services import KubernetesAPIError
 from apps.clusters.services import _is_ip_address, _replace_server_host, validate_kubeconfig
 from apps.iam.models import User
 
@@ -265,3 +273,123 @@ class ClusterManagementAPITests(TestCase):
         response = self.client.delete(f"/api/v1/clusters/{self.cluster.id}")
         self.assertEqual(response.status_code, 204)
         self.assertFalse(Cluster.objects.filter(id=self.cluster.id).exists())
+
+    @patch("apps.k8s_gateway.services.KubernetesClient.discover")
+    @patch("apps.k8s_gateway.services.KubernetesClient.probe")
+    def test_import_cluster_triggers_initial_health_check(self, probe_mock, discover_mock):
+        probe_mock.return_value = {"version": {"gitVersion": "v1.30.0"}, "latency_ms": 12}
+        discover_mock.return_value = {
+            "groups": [{"group": "core", "version": "v1", "preferred_version": "v1", "resources": []}],
+            "resource_index": {},
+            "supports_exec": False,
+        }
+        response = self.client.post(
+            "/api/v1/clusters",
+            data={
+                "name": "imported-cluster",
+                "environment": "dev",
+                "description": "import test",
+                "kubeconfig": """\
+apiVersion: v1
+kind: Config
+clusters:
+  - name: sample
+    cluster:
+      server: https://127.0.0.1:6443
+users:
+  - name: sample
+    user:
+      token: test-token
+contexts:
+  - name: sample
+    context:
+      cluster: sample
+      user: sample
+current-context: sample
+""",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        payload = response.json()
+        self.assertEqual(payload["status"], ClusterStatus.READY)
+        self.assertEqual(payload["health_state"], ClusterHealthState.HEALTHY)
+        self.assertEqual(payload["health"]["status"], ClusterHealthState.HEALTHY)
+        self.assertIn("Kubernetes 版本", payload["health"]["message"])
+        self.assertIn("Discovery 已同步", payload["health"]["message"])
+
+    @patch("apps.k8s_gateway.services.KubernetesClient.probe", side_effect=KubernetesAPIError("探测失败", status_code=502))
+    def test_import_cluster_health_probe_failure_does_not_block_import(self, _probe_mock):
+        response = self.client.post(
+            "/api/v1/clusters",
+            data={
+                "name": "imported-cluster-failed-probe",
+                "environment": "dev",
+                "description": "import test",
+                "kubeconfig": """\
+apiVersion: v1
+kind: Config
+clusters:
+  - name: sample
+    cluster:
+      server: https://127.0.0.1:6443
+users:
+  - name: sample
+    user:
+      token: test-token
+contexts:
+  - name: sample
+    context:
+      cluster: sample
+      user: sample
+current-context: sample
+""",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        payload = response.json()
+        self.assertEqual(payload["status"], ClusterStatus.ERROR)
+        self.assertEqual(payload["health_state"], ClusterHealthState.DEGRADED)
+        self.assertEqual(payload["health"]["status"], ClusterHealthState.DEGRADED)
+        self.assertIn("探测失败", payload["health"]["message"])
+
+    @patch("apps.k8s_gateway.services.KubernetesClient.discover", side_effect=KubernetesAPIError("discovery 失败", status_code=502))
+    @patch("apps.k8s_gateway.services.KubernetesClient.probe")
+    def test_import_cluster_discovery_failure_does_not_block_import(self, probe_mock, _discover_mock):
+        probe_mock.return_value = {"version": {"gitVersion": "v1.30.0"}, "latency_ms": 10}
+        response = self.client.post(
+            "/api/v1/clusters",
+            data={
+                "name": "imported-cluster-discovery-failed",
+                "environment": "dev",
+                "description": "import test",
+                "kubeconfig": """\
+apiVersion: v1
+kind: Config
+clusters:
+  - name: sample
+    cluster:
+      server: https://127.0.0.1:6443
+users:
+  - name: sample
+    user:
+      token: test-token
+contexts:
+  - name: sample
+    context:
+      cluster: sample
+      user: sample
+current-context: sample
+""",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        payload = response.json()
+        self.assertEqual(payload["status"], ClusterStatus.READY)
+        self.assertEqual(payload["health_state"], ClusterHealthState.HEALTHY)
+        self.assertIn("Discovery 同步失败", payload["health"]["message"])

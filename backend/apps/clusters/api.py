@@ -9,6 +9,15 @@ from .models import Cluster
 from .serializers import ClusterImportSerializer, ClusterSerializer, ClusterUpdateSerializer
 
 
+def _sync_discovery_after_health_check(client: KubernetesClient, cluster: Cluster) -> dict:
+    discovery = client.discover()
+    client.sync_capability_from_discovery(discovery)
+    group_count = len(discovery.get("groups", []))
+    cluster.health.message = f"{cluster.health.message} Discovery 已同步 {group_count} 个资源组。"
+    cluster.health.save(update_fields=["message", "last_checked_at"])
+    return discovery
+
+
 class ClusterListCreateView(generics.ListCreateAPIView):
     queryset = Cluster.objects.select_related("health", "capability").all()
 
@@ -21,6 +30,19 @@ class ClusterListCreateView(generics.ListCreateAPIView):
         serializer = self.get_serializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         cluster = serializer.save()
+        client = KubernetesClient(cluster)
+        # 导入后立即触发一次真实联通性探测，避免状态长期停留在 pending。
+        try:
+            client.sync_health()
+        except KubernetesAPIError:
+            # 导入流程本身已完成，探测失败只更新健康状态，不影响 201 响应。
+            pass
+        else:
+            try:
+                _sync_discovery_after_health_check(client, cluster)
+            except KubernetesAPIError as exc:
+                cluster.health.message = f"{cluster.health.message} Discovery 同步失败：{exc}"
+                cluster.health.save(update_fields=["message", "last_checked_at"])
         response_serializer = ClusterSerializer(cluster)
         return Response(response_serializer.data, status=status.HTTP_201_CREATED)
 
@@ -90,12 +112,41 @@ class ClusterHealthCheckView(APIView):
                 target={"cluster_id": str(cluster.id)},
                 metadata={"message": str(exc)},
             )
+            message = str(exc)
+            if exc.status_code in (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN):
+                message = f"上游 Kubernetes API 鉴权失败（{exc.status_code}）：{exc}"
             return Response(
                 {
-                    "message": str(exc),
+                    "message": message,
                     "details": exc.details,
                 },
                 status=exc.status_code or status.HTTP_502_BAD_GATEWAY,
+            )
+        discovery = None
+        try:
+            discovery = _sync_discovery_after_health_check(client, cluster)
+        except KubernetesAPIError as exc:
+            record_audit_event(
+                event_type="cluster.discovery",
+                actor=request.user,
+                cluster=cluster,
+                request=request,
+                severity="warning",
+                status="error",
+                target={"cluster_id": str(cluster.id)},
+                metadata={"message": str(exc)},
+            )
+            cluster.health.message = f"{cluster.health.message} Discovery 同步失败：{exc}"
+            cluster.health.save(update_fields=["message", "last_checked_at"])
+        else:
+            record_audit_event(
+                event_type="cluster.discovery",
+                actor=request.user,
+                cluster=cluster,
+                request=request,
+                status="success",
+                target={"cluster_id": str(cluster.id)},
+                metadata={"group_count": len(discovery.get("groups", []))},
             )
 
         record_audit_event(

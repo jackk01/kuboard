@@ -4,10 +4,10 @@ set -eu
 ROOT_DIR="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
 
 echo "[1/6] Backend tests"
-(cd "$ROOT_DIR/backend" && ./.venv/bin/python manage.py test apps.k8s_gateway apps.streams apps.iam apps.rbac_bridge apps.clusters apps.audit apps.system_settings)
+(cd "$ROOT_DIR/backend" && ./venv/bin/python manage.py test apps.k8s_gateway apps.streams apps.iam apps.rbac_bridge apps.clusters apps.audit apps.system_settings)
 
 echo "[2/6] Django system check"
-(cd "$ROOT_DIR/backend" && ./.venv/bin/python manage.py check)
+(cd "$ROOT_DIR/backend" && ./venv/bin/python manage.py check)
 
 echo "[3/6] Frontend type check"
 (cd "$ROOT_DIR/frontend" && npm run check)
