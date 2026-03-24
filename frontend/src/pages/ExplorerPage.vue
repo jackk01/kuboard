@@ -9,14 +9,12 @@ import { useClusterStore } from '../stores/clusters'
 import type {
   ClusterDiscoveryResponse,
   DiscoveryResource,
-  PodExecResponse,
   PodLogsResponse,
   ResourceDetailResponse,
   ResourceListResponse,
   ResourcePermissionResponse,
   ResourceSchemaResponse,
   ResourceWatchResponse,
-  StreamSessionRecord,
   StreamSessionSummary,
   TerminalOutputResponse,
   TerminalSessionResponse,
@@ -25,11 +23,20 @@ import type {
 const clusterStore = useClusterStore()
 const router = useRouter()
 type WatchEventItem = ResourceWatchResponse['events'][number] & { received_at: string }
+type ResourceSortKey = 'name' | 'namespace' | 'status' | 'age'
 
 const selectedClusterId = ref('')
 const selectedGroupKey = ref('')
 const selectedResourceName = ref('')
 const selectedNamespace = ref('')
+const resourceSearchKeyword = ref('')
+const resourcePage = ref(1)
+const resourcePageSize = ref(10)
+const resourcePageSizeOptions = [10, 20, 50, 100] as const
+const resourceSortKey = ref<ResourceSortKey | ''>('')
+const resourceSortDirection = ref<'asc' | 'desc'>('asc')
+const RESOURCE_LIST_FETCH_LIMIT = 200
+const RESOURCE_LIST_MAX_PAGES = 50
 
 const discovery = ref<ClusterDiscoveryResponse | null>(null)
 const resourceList = ref<ResourceListResponse | null>(null)
@@ -62,16 +69,7 @@ const watchEvents = ref<WatchEventItem[]>([])
 const watchError = ref('')
 const watchCursor = ref('')
 const watchSyncMessage = ref('')
-const execResponse = ref<PodExecResponse | null>(null)
-const execError = ref('')
-const executing = ref(false)
-const selectedExecContainer = ref('')
 const selectedTerminalContainer = ref('')
-const execCommand = ref('id')
-const execTimeoutSeconds = ref(15)
-const execHistory = ref<StreamSessionRecord[]>([])
-const execHistoryError = ref('')
-const loadingExecHistory = ref(false)
 const terminalSession = ref<TerminalSessionResponse | null>(null)
 const terminalOutput = ref('')
 const terminalError = ref('')
@@ -282,6 +280,78 @@ const explorerSummary = computed(() => ({
   listed: resourceList.value?.metadata.count ?? resourceList.value?.items.length ?? 0,
 }))
 
+const normalizedResourceSearchKeyword = computed(() =>
+  normalizeSearchText(resourceSearchKeyword.value),
+)
+const resourceSearchTerms = computed(() => tokenizeSearchText(normalizedResourceSearchKeyword.value))
+
+const filteredResourceItems = computed(() => {
+  const items = resourceList.value?.items ?? []
+  const searchKeyword = normalizedResourceSearchKeyword.value
+  let matchedItems: Array<Record<string, any>> = []
+
+  if (!searchKeyword) {
+    matchedItems = [...items]
+  } else {
+    const searchTerms = resourceSearchTerms.value
+    const scoredItems = items
+      .map((item) => {
+        const name = normalizeSearchText(resolveSearchableResourceName(item))
+        if (!name) {
+          return null
+        }
+
+        const nameTerms = tokenizeSearchText(name)
+        let score = 0
+
+        if (name === searchKeyword) {
+          score = 400
+        } else if (name.startsWith(searchKeyword)) {
+          score = 300
+        } else if (nameTerms.some((term) => term.startsWith(searchKeyword))) {
+          score = 240
+        } else if (searchTerms.every((term) => nameTerms.some((nameTerm) => nameTerm.startsWith(term)))) {
+          score = 180
+        } else if (searchTerms.every((term) => name.includes(term))) {
+          score = 120
+        }
+
+        if (!score) {
+          return null
+        }
+
+        return {
+          item,
+          name,
+          score,
+        }
+      })
+      .filter((entry): entry is { item: Record<string, any>; name: string; score: number } => Boolean(entry))
+
+    scoredItems.sort((left, right) => right.score - left.score || left.name.localeCompare(right.name))
+    matchedItems = scoredItems.map((entry) => entry.item)
+  }
+
+  return sortResourceItems(matchedItems)
+})
+
+const resourceTotalPages = computed(() => Math.max(1, Math.ceil(filteredResourceItems.value.length / resourcePageSize.value)))
+
+const paginatedResourceItems = computed(() => {
+  const start = (resourcePage.value - 1) * resourcePageSize.value
+  return filteredResourceItems.value.slice(start, start + resourcePageSize.value)
+})
+
+const resourcePageStart = computed(() =>
+  filteredResourceItems.value.length ? (resourcePage.value - 1) * resourcePageSize.value + 1 : 0,
+)
+
+const resourcePageEnd = computed(() =>
+  filteredResourceItems.value.length
+    ? Math.min(resourcePage.value * resourcePageSize.value, filteredResourceItems.value.length)
+    : 0,
+)
+
 const namespaceOptions = computed(() => discovery.value?.namespaces ?? [])
 const permissionLabels: Record<string, string> = {
   get: '读取',
@@ -446,14 +516,13 @@ const canEditYaml = computed(
 )
 const canDeleteResource = computed(() => Boolean(resourcePermissions.value?.verbs.delete?.allowed))
 const canWatchResources = computed(() => Boolean(resourcePermissions.value?.verbs.watch?.allowed))
-const canExecPod = computed(
+const canOpenTerminal = computed(
   () =>
     Boolean(
       isPodResource.value &&
         resourcePermissions.value?.subresources.exec?.allowed,
     ),
 )
-const canOpenTerminal = computed(() => canExecPod.value)
 const canViewPodLogs = computed(
   () =>
     Boolean(
@@ -464,6 +533,9 @@ const canViewPodLogs = computed(
 )
 const isPodResource = computed(
   () => selectedDetail.value?.resource.group === 'core' && selectedDetail.value?.resource.name === 'pods',
+)
+const isPodListResource = computed(
+  () => selectedGroup.value?.group === 'core' && selectedResourceName.value === 'pods',
 )
 
 function extractContainerNames(object: Record<string, any> | null) {
@@ -493,21 +565,6 @@ function resetLogState() {
   if (sessionId) {
     void closeStreamSession(sessionId)
   }
-}
-
-function resetExecState() {
-  execResponse.value = null
-  execError.value = ''
-  executing.value = false
-  selectedExecContainer.value = ''
-  execCommand.value = 'id'
-  execTimeoutSeconds.value = 15
-}
-
-function resetExecHistory() {
-  execHistory.value = []
-  execHistoryError.value = ''
-  loadingExecHistory.value = false
 }
 
 function clearTerminalPollTimer() {
@@ -593,17 +650,6 @@ function formatWatchTime(timestamp: string) {
   return value.toLocaleTimeString('zh-CN', { hour12: false })
 }
 
-function formatDateTime(timestamp?: string | null) {
-  if (!timestamp) {
-    return '--'
-  }
-  const value = new Date(timestamp)
-  if (Number.isNaN(value.getTime())) {
-    return '--'
-  }
-  return value.toLocaleString('zh-CN', { hour12: false })
-}
-
 function cloneObject<T>(value: T): T {
   return JSON.parse(JSON.stringify(value))
 }
@@ -661,12 +707,6 @@ function watchEventBadgeClass(type: string) {
   if (type === 'DELETED') return 'status-denied'
   if (type === 'BOOKMARK') return 'status-warning'
   return 'status-info'
-}
-
-function sessionStatusClass(status: string) {
-  if (status === 'success') return 'status-success'
-  if (status === 'error') return 'status-denied'
-  return 'status-warning'
 }
 
 function schemaSourceLabel(source?: string) {
@@ -817,22 +857,217 @@ function resourceItemKey(item: Record<string, any> | null) {
   return `${metadata.namespace || 'cluster'}:${metadata.name || ''}`
 }
 
+function resolveResourceName(item: Record<string, any> | null) {
+  if (!item || typeof item !== 'object') {
+    return ''
+  }
+
+  return String(item.metadata?.name || item.name || item.metadata?.generateName || '')
+}
+
+function resolveSearchableResourceName(item: Record<string, any> | null) {
+  if (!item || typeof item !== 'object') {
+    return ''
+  }
+  return String(item.metadata?.name || item.name || '')
+}
+
+function normalizeSearchText(value: string) {
+  return value.trim().toLowerCase().replace(/\s+/g, ' ')
+}
+
+function tokenizeSearchText(value: string) {
+  const normalizedValue = normalizeSearchText(value)
+  if (!normalizedValue) {
+    return [] as string[]
+  }
+  return normalizedValue.split(/[\s\-._/]+/).filter(Boolean)
+}
+
+function resolveCreationTimestamp(item: Record<string, any> | null) {
+  const timestamp = item?.metadata?.creationTimestamp
+  if (!timestamp) {
+    return 0
+  }
+  const timeValue = new Date(String(timestamp)).getTime()
+  return Number.isNaN(timeValue) ? 0 : timeValue
+}
+
+function compareResourceText(left: string, right: string) {
+  return left.localeCompare(right, 'zh-CN', { numeric: true, sensitivity: 'base' })
+}
+
+function getResourceSortText(item: Record<string, any>, key: Exclude<ResourceSortKey, 'age'>) {
+  if (key === 'name') {
+    return resolveResourceName(item)
+  }
+  if (key === 'namespace') {
+    return String(item.metadata?.namespace || '')
+  }
+  return summarizeStatus(item)
+}
+
+function sortResourceItems(items: Array<Record<string, any>>) {
+  if (!resourceSortKey.value || items.length < 2) {
+    return items
+  }
+
+  const key = resourceSortKey.value
+  const direction = resourceSortDirection.value === 'asc' ? 1 : -1
+  return [...items].sort((left, right) => {
+    let result = 0
+
+    if (key === 'age') {
+      result = resolveCreationTimestamp(left) - resolveCreationTimestamp(right)
+    } else {
+      result = compareResourceText(
+        getResourceSortText(left, key).toLowerCase(),
+        getResourceSortText(right, key).toLowerCase(),
+      )
+    }
+
+    if (!result) {
+      result = compareResourceText(
+        resolveResourceName(left).toLowerCase(),
+        resolveResourceName(right).toLowerCase(),
+      )
+    }
+
+    return result * direction
+  })
+}
+
+function toggleResourceSort(key: ResourceSortKey) {
+  if (resourceSortKey.value !== key) {
+    resourceSortKey.value = key
+    resourceSortDirection.value = key === 'age' ? 'desc' : 'asc'
+    return
+  }
+
+  if (resourceSortDirection.value === 'asc') {
+    resourceSortDirection.value = 'desc'
+    return
+  }
+
+  resourceSortKey.value = ''
+  resourceSortDirection.value = 'asc'
+}
+
+function resourceSortIndicator(key: ResourceSortKey) {
+  if (resourceSortKey.value !== key) {
+    return '↕'
+  }
+  return resourceSortDirection.value === 'asc' ? '↑' : '↓'
+}
+
+function dedupeResourceItems(items: Array<Record<string, any>>) {
+  const keys = new Set<string>()
+  const dedupedItems: Array<Record<string, any>> = []
+
+  for (const item of items) {
+    const key = resourceItemKey(item)
+    if (keys.has(key)) {
+      continue
+    }
+    keys.add(key)
+    dedupedItems.push(item)
+  }
+
+  return dedupedItems
+}
+
+async function fetchResourceListAllPages() {
+  if (!selectedClusterId.value || !selectedGroup.value || !selectedResourceName.value) {
+    return null
+  }
+
+  let continueToken = ''
+  let firstPagePayload: ResourceListResponse | null = null
+  let latestResourceVersion = ''
+  const visitedContinueTokens = new Set<string>()
+  const mergedItems: Array<Record<string, any>> = []
+
+  for (let index = 0; index < RESOURCE_LIST_MAX_PAGES; index += 1) {
+    const query = new URLSearchParams({
+      limit: String(RESOURCE_LIST_FETCH_LIMIT),
+    })
+
+    if (selectedResource.value?.namespaced && selectedNamespace.value) {
+      query.set('namespace', selectedNamespace.value)
+    }
+    if (continueToken) {
+      query.set('continue', continueToken)
+    }
+
+    const payload = await apiRequest<ResourceListResponse>(
+      `/api/v1/clusters/${selectedClusterId.value}/resources/${selectedGroup.value.group}/${selectedGroup.value.version}/${selectedResourceName.value}?${query.toString()}`,
+    )
+    if (!firstPagePayload) {
+      firstPagePayload = payload
+    }
+    mergedItems.push(...payload.items)
+    latestResourceVersion = payload.metadata.resource_version || latestResourceVersion
+
+    const nextContinueToken = payload.metadata.continue || ''
+    if (!nextContinueToken) {
+      continueToken = ''
+      break
+    }
+    if (visitedContinueTokens.has(nextContinueToken)) {
+      continueToken = nextContinueToken
+      break
+    }
+
+    visitedContinueTokens.add(nextContinueToken)
+    continueToken = nextContinueToken
+  }
+
+  if (!firstPagePayload) {
+    return null
+  }
+
+  const dedupedItems = dedupeResourceItems(mergedItems)
+  return {
+    ...firstPagePayload,
+    items: dedupedItems,
+    metadata: {
+      count: dedupedItems.length,
+      continue: continueToken,
+      resource_version: latestResourceVersion || firstPagePayload.metadata.resource_version,
+    },
+  }
+}
+
 function updateContainerSelection(nextContainers: string[]) {
   if (!nextContainers.length) {
     selectedLogContainer.value = ''
-    selectedExecContainer.value = ''
     selectedTerminalContainer.value = ''
     return
   }
   if (!selectedLogContainer.value || !nextContainers.includes(selectedLogContainer.value)) {
     selectedLogContainer.value = nextContainers[0] ?? ''
   }
-  if (!selectedExecContainer.value || !nextContainers.includes(selectedExecContainer.value)) {
-    selectedExecContainer.value = nextContainers[0] ?? ''
-  }
   if (!selectedTerminalContainer.value || !nextContainers.includes(selectedTerminalContainer.value)) {
     selectedTerminalContainer.value = nextContainers[0] ?? ''
   }
+}
+
+function syncResourcePageToSelectedItem() {
+  if (!selectedItem.value) {
+    return
+  }
+
+  const selectedKey = resourceItemKey(selectedItem.value)
+  const index = filteredResourceItems.value.findIndex((item) => resourceItemKey(item) === selectedKey)
+  if (index < 0) {
+    return
+  }
+
+  resourcePage.value = Math.floor(index / resourcePageSize.value) + 1
+}
+
+function goToResourcePage(page: number) {
+  resourcePage.value = Math.min(Math.max(page, 1), resourceTotalPages.value)
 }
 
 function clearSelectedResourceState(message = '') {
@@ -852,8 +1087,6 @@ function clearSelectedResourceState(message = '') {
   applyError.value = ''
   applyMessage.value = ''
   resetLogState()
-  resetExecState()
-  resetExecHistory()
   resetTerminalState()
   watchSyncMessage.value = message
 }
@@ -940,7 +1173,30 @@ function scheduleSelectedDetailRefresh(item: Record<string, any>, eventType: str
   }, 320)
 }
 
+function normalizeReplicaCount(value: unknown, fallback = 0) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return fallback
+  }
+  return Math.floor(parsed)
+}
+
 function summarizeStatus(item: Record<string, any>) {
+  const isDeploymentResource =
+    selectedResourceName.value === 'deployments' &&
+    (selectedGroup.value?.group === 'apps' || String(item.apiVersion || '').startsWith('apps/'))
+
+  if (isDeploymentResource) {
+    const status = item.status ?? {}
+    const spec = item.spec ?? {}
+    const readyReplicas = normalizeReplicaCount(status.readyReplicas, 0)
+    const desiredReplicas = normalizeReplicaCount(
+      spec.replicas,
+      normalizeReplicaCount(status.replicas, 1),
+    )
+    return `${readyReplicas}/${desiredReplicas}`
+  }
+
   const status = item.status ?? {}
   if (typeof status.phase === 'string' && status.phase) {
     return status.phase
@@ -991,8 +1247,6 @@ async function loadDiscovery(options: { preserveSelection?: boolean; resetState?
     applyMessage.value = ''
     watchSyncMessage.value = ''
     resetLogState()
-    resetExecState()
-    resetExecHistory()
     resetTerminalState()
     resetSchemaState()
     resetFormEditorState()
@@ -1118,39 +1372,6 @@ async function loadResourceSchema() {
   }
 }
 
-async function loadExecHistory() {
-  if (!selectedClusterId.value || !selectedDetail.value || !isPodResource.value) {
-    resetExecHistory()
-    return
-  }
-
-  loadingExecHistory.value = true
-  execHistoryError.value = ''
-
-  const query = new URLSearchParams({
-    cluster: selectedClusterId.value,
-    stream_type: 'exec',
-    namespace: selectedDetail.value.metadata.namespace || selectedNamespaceOrDefault.value,
-    resource_name: selectedDetail.value.metadata.name,
-    limit: '8',
-  })
-
-  try {
-    execHistory.value = await apiRequest<StreamSessionRecord[]>(
-      `/api/v1/streams/sessions?${query.toString()}`,
-    )
-  } catch (error) {
-    execHistory.value = []
-    if (error instanceof ApiError) {
-      execHistoryError.value = error.message
-    } else {
-      execHistoryError.value = 'Exec 历史读取失败。'
-    }
-  } finally {
-    loadingExecHistory.value = false
-  }
-}
-
 async function loadResourceDetail(
   item: Record<string, any>,
   options: { preserveFeedback?: boolean; preserveStreams?: boolean; fromWatch?: boolean } = {},
@@ -1175,8 +1396,6 @@ async function loadResourceDetail(
   resetCreateState()
   if (!options.preserveStreams) {
     resetLogState()
-    resetExecState()
-    resetExecHistory()
     resetTerminalState()
   }
 
@@ -1195,12 +1414,7 @@ async function loadResourceDetail(
     hydrateFormDraft(payload.object)
     updateContainerSelection(extractContainerNames(payload.object))
     await loadResourcePermissions(item)
-    if (payload.resource.group === 'core' && payload.resource.name === 'pods') {
-      if (!options.preserveStreams || !execHistory.value.length) {
-        await loadExecHistory()
-      }
-    } else if (!options.preserveStreams) {
-      resetExecHistory()
+    if (!(payload.resource.group === 'core' && payload.resource.name === 'pods') && !options.preserveStreams) {
       resetTerminalState()
     }
     if (options.fromWatch) {
@@ -1211,7 +1425,6 @@ async function loadResourceDetail(
     resourcePermissions.value = null
     resetFormEditorState()
     resetCreateState()
-    resetExecHistory()
     resetTerminalState()
     if (error instanceof ApiError) {
       detailError.value = error.message
@@ -1252,22 +1465,16 @@ async function loadResources(options: { preserveFeedback?: boolean; targetKey?: 
   }
   watchSyncMessage.value = ''
   resetLogState()
-  resetExecState()
-  resetExecHistory()
   resetTerminalState()
   resetSchemaState()
   resetFormEditorState()
   resetCreateState()
 
-  const namespaceQuery =
-    selectedResource.value?.namespaced && selectedNamespace.value
-      ? `?namespace=${encodeURIComponent(selectedNamespace.value)}`
-      : ''
-
   try {
-    resourceList.value = await apiRequest<ResourceListResponse>(
-      `/api/v1/clusters/${selectedClusterId.value}/resources/${selectedGroup.value.group}/${selectedGroup.value.version}/${selectedResourceName.value}${namespaceQuery}`,
-    )
+    resourceList.value = await fetchResourceListAllPages()
+    if (!resourceList.value) {
+      return
+    }
     await loadResourceSchema()
     await loadResourcePermissions()
     const preferredItem =
@@ -1333,8 +1540,6 @@ function startCreating(mode: 'yaml' | 'form' = 'yaml') {
   applyMessage.value = ''
   watchSyncMessage.value = ''
   resetLogState()
-  resetExecState()
-  resetExecHistory()
   resetTerminalState()
 }
 
@@ -1381,6 +1586,14 @@ function openYamlDialog() {
 
 function closeYamlDialog() {
   yamlDialogOpen.value = false
+}
+
+function handleGlobalKeydown(event: KeyboardEvent) {
+  if (event.key !== 'Escape' || !yamlDialogOpen.value) {
+    return
+  }
+  event.preventDefault()
+  closeYamlDialog()
 }
 
 function openPodLogsInNewTab() {
@@ -1742,40 +1955,6 @@ function stopLogFollowing() {
   }
 }
 
-async function executePodCommand() {
-  if (!selectedClusterId.value || !selectedDetail.value || !isPodResource.value || !canExecPod.value) {
-    return
-  }
-
-  executing.value = true
-  execError.value = ''
-
-  try {
-    execResponse.value = await apiRequest<PodExecResponse>(
-      `/api/v1/clusters/${selectedClusterId.value}/resources/core/v1/pods/${encodeURIComponent(selectedDetail.value.metadata.name)}/exec`,
-      {
-        method: 'POST',
-        body: JSON.stringify({
-          namespace: selectedDetail.value.metadata.namespace || selectedNamespaceOrDefault.value,
-          container: selectedExecContainer.value || undefined,
-          shell_command: execCommand.value,
-          timeout_seconds: execTimeoutSeconds.value,
-        }),
-      },
-    )
-    await loadExecHistory()
-  } catch (error) {
-    execResponse.value = null
-    if (error instanceof ApiError) {
-      execError.value = error.message
-    } else {
-      execError.value = 'Pod Exec 执行失败。'
-    }
-  } finally {
-    executing.value = false
-  }
-}
-
 async function pollTerminalOutput(loopToken: number) {
   if (!terminalSession.value || loopToken !== terminalLoopToken) {
     return
@@ -1838,7 +2017,7 @@ async function openTerminalSession() {
         method: 'POST',
         body: JSON.stringify({
           namespace: selectedDetail.value.metadata.namespace || selectedNamespaceOrDefault.value,
-          container: selectedExecContainer.value || undefined,
+          container: selectedTerminalContainer.value || undefined,
           shell: terminalShell.value,
           rows: terminalRows.value,
           cols: terminalCols.value,
@@ -1998,6 +2177,7 @@ function startWatching() {
 }
 
 onMounted(async () => {
+  document.addEventListener('keydown', handleGlobalKeydown)
   if (!clusterStore.items.length) {
     await clusterStore.fetchClusters()
   }
@@ -2005,6 +2185,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  document.removeEventListener('keydown', handleGlobalKeydown)
   stopLogFollowing()
   resetTerminalState()
   clearDetailRefreshTimer()
@@ -2023,6 +2204,31 @@ watch(selectedGroupKey, () => {
     selectedResourceName.value = resources.value[0]?.name ?? ''
   }
 })
+
+watch(resourceSearchKeyword, () => {
+  resourcePage.value = 1
+})
+
+watch(resourcePageSize, () => {
+  resourcePage.value = 1
+})
+
+watch([resourceSortKey, resourceSortDirection], () => {
+  resourcePage.value = 1
+})
+
+watch(filteredResourceItems, () => {
+  if (resourcePage.value > resourceTotalPages.value) {
+    resourcePage.value = resourceTotalPages.value
+  }
+})
+
+watch(
+  () => resourceItemKey(selectedItem.value),
+  () => {
+    syncResourcePageToSelectedItem()
+  },
+)
 
 watch(
   () => quickCategoryTabs.value,
@@ -2145,7 +2351,7 @@ watch(
       </div>
     </section>
 
-    <section class="split-detail explorer-split">
+    <section class="split-detail explorer-split" :class="{ 'explorer-split-pods-equal': isPodListResource }">
       <article class="surface-card explorer-list-panel">
         <div class="section-head">
           <div>
@@ -2158,22 +2364,57 @@ watch(
               }}
             </p>
           </div>
+          <div v-if="resourceList" class="explorer-list-head-actions">
+            <label class="field-label explorer-search-field">
+              <input
+                v-model="resourceSearchKeyword"
+                class="explorer-search-input"
+                type="text"
+                placeholder="按 Name 搜索（优先精确/前缀匹配）"
+              />
+            </label>
+          </div>
+        </div>
+
+        <div v-if="resourceList" class="helper-text explorer-list-summary">
+          {{ resourceList.metadata.continue ? `已加载 ${resourceList.metadata.count} 条资源（仍有更多）` : `共 ${resourceList.metadata.count} 条资源` }}，匹配 {{ filteredResourceItems.length }} 条，
+          当前显示第 {{ resourcePageStart || 0 }} - {{ resourcePageEnd || 0 }} 条。
         </div>
 
         <div v-if="loadingResources" class="helper-text">正在读取资源...</div>
         <div v-else-if="resourceError" class="error-text">{{ resourceError }}</div>
-        <table v-else-if="resourceList?.items.length" class="table">
+        <table v-else-if="paginatedResourceItems.length" class="table">
           <thead>
             <tr>
-              <th>Name</th>
-              <th>名称空间</th>
-              <th>Status</th>
-              <th>Age</th>
+              <th>
+                <button type="button" class="explorer-sort-button" @click="toggleResourceSort('name')">
+                  Name
+                  <span class="explorer-sort-indicator">{{ resourceSortIndicator('name') }}</span>
+                </button>
+              </th>
+              <th>
+                <button type="button" class="explorer-sort-button" @click="toggleResourceSort('namespace')">
+                  名称空间
+                  <span class="explorer-sort-indicator">{{ resourceSortIndicator('namespace') }}</span>
+                </button>
+              </th>
+              <th>
+                <button type="button" class="explorer-sort-button" @click="toggleResourceSort('status')">
+                  Status
+                  <span class="explorer-sort-indicator">{{ resourceSortIndicator('status') }}</span>
+                </button>
+              </th>
+              <th>
+                <button type="button" class="explorer-sort-button" @click="toggleResourceSort('age')">
+                  Age
+                  <span class="explorer-sort-indicator">{{ resourceSortIndicator('age') }}</span>
+                </button>
+              </th>
             </tr>
           </thead>
           <tbody>
             <tr
-              v-for="item in resourceList.items"
+              v-for="item in paginatedResourceItems"
               :key="`${item.metadata?.namespace || 'cluster'}:${item.metadata?.name}`"
               :class="{
                 'table-row-active':
@@ -2184,7 +2425,7 @@ watch(
               style="cursor: pointer"
             >
               <td>
-                <strong>{{ item.metadata?.name || '--' }}</strong>
+                <strong>{{ resolveResourceName(item) || '--' }}</strong>
               </td>
               <td>{{ item.metadata?.namespace || '--' }}</td>
               <td>{{ summarizeStatus(item) }}</td>
@@ -2192,11 +2433,53 @@ watch(
             </tr>
           </tbody>
         </table>
+        <div v-if="filteredResourceItems.length" class="explorer-pagination">
+          <div class="explorer-pagination-pill">
+            第 {{ resourcePage }} / {{ resourceTotalPages }} 页
+          </div>
+          <div class="explorer-pagination-controls">
+            <label class="field-label explorer-page-size-field">
+              <select v-model.number="resourcePageSize">
+                <option v-for="size in resourcePageSizeOptions" :key="size" :value="size">
+                  {{ size }}
+                </option>
+              </select>
+            </label>
+          </div>
+          <div class="button-row explorer-pagination-actions">
+            <button class="button button-secondary explorer-pagination-button" :disabled="resourcePage <= 1" @click="goToResourcePage(1)">
+              首
+            </button>
+            <button
+              class="button button-secondary explorer-pagination-button"
+              :disabled="resourcePage <= 1"
+              @click="goToResourcePage(resourcePage - 1)"
+            >
+              上一页
+            </button>
+            <button
+              class="button button-secondary explorer-pagination-button"
+              :disabled="resourcePage >= resourceTotalPages"
+              @click="goToResourcePage(resourcePage + 1)"
+            >
+              下一页
+            </button>
+            <button
+              class="button button-secondary explorer-pagination-button"
+              :disabled="resourcePage >= resourceTotalPages"
+              @click="goToResourcePage(resourceTotalPages)"
+            >
+              末
+            </button>
+          </div>
+        </div>
         <div v-else class="empty-state">
           {{
-            selectedResource
-              ? '当前查询没有返回资源，可能是资源为空，或者当前账号没有读取权限。'
-              : '导入真实集群并完成 Discovery 后，这里会显示实际资源。'
+            resourceList?.items.length
+              ? '没有匹配到符合条件的资源，请调整 Name 搜索关键字后重试。'
+              : selectedResource
+                ? '当前查询没有返回资源，可能是资源为空，或者当前账号没有读取权限。'
+                : '导入真实集群并完成 Discovery 后，这里会显示实际资源。'
           }}
         </div>
       </article>
@@ -2207,23 +2490,23 @@ watch(
             <h2>详情与 YAML</h2>
             <p>现在支持资源新建与 YAML/JSON 编辑，会先探测真实权限，再决定是否允许修改或创建。</p>
           </div>
-          <div class="button-row">
+          <div class="explorer-detail-actions">
             <button
-              class="button button-secondary"
+              class="button explorer-detail-action button-primary"
               :disabled="!selectedResource || loadingPermissions || (!canCreateResource && !isCreating)"
               @click="isCreating ? cancelEditing() : startCreating('yaml')"
             >
-              {{ isCreating ? '取消新建' : '新建资源' }}
+              {{ isCreating ? '取消新建' : '新建' }}
             </button>
             <button
-              class="button button-secondary"
+              class="button explorer-detail-action button-secondary"
               :disabled="!selectedDetail || loadingPermissions || (isCreating ? !canCreateResource : !canEditYaml)"
               @click="openYamlDialog"
             >
-              {{ isCreating ? '查看 YAML 草稿' : '查看 YAML' }}
+              查看
             </button>
             <button
-              class="button button-secondary"
+              class="button explorer-detail-action button-danger"
               :disabled="!selectedDetail || isCreating || applying || deleting || loadingPermissions || !canDeleteResource"
               @click="deleteResource"
             >
@@ -2240,204 +2523,99 @@ watch(
           当前处于新建草稿模式，编辑器接受 YAML 或 JSON；Create 会调用 Kubernetes 资源集合创建接口。
         </div>
 
-        <div v-if="selectedDetail" class="pill-row" style="margin-bottom: 14px">
-          <span class="pill" v-if="isCreating">Mode: create-draft</span>
-          <span class="pill">Kind: {{ selectedDetail.resource.kind }}</span>
-          <span class="pill">Name: {{ selectedDetail.metadata.name || '--draft--' }}</span>
-          <span class="pill" v-if="selectedDetail.metadata.namespace">名称空间: {{ selectedDetail.metadata.namespace }}</span>
-          <span class="pill">RV: {{ selectedDetail.metadata.resource_version || '--' }}</span>
+        <div v-if="isPodResource && !isCreating" class="pod-tools-grid">
+          <section class="log-panel pod-tool-card">
+            <div class="pod-tool-header">
+              <div class="pod-tool-summary">
+                <h2 style="font-size: 15px">Pod 日志</h2>
+                <p>选择好容器和输出行数后，会在新的浏览器页签中打开日志视图，并默认开启追踪模式。</p>
+              </div>
+              <div class="pod-tool-actions">
+                <button class="button button-primary" :disabled="!canViewPodLogs" @click="openPodLogsInNewTab">
+                  查看日志
+                </button>
+              </div>
+            </div>
+
+            <div class="toolbar-grid logs-toolbar">
+              <label class="field-label">
+                Container
+                <select v-model="selectedLogContainer" :disabled="!containerOptions.length || !canViewPodLogs">
+                  <option value="">自动选择</option>
+                  <option v-for="container in containerOptions" :key="container" :value="container">
+                    {{ container }}
+                  </option>
+                </select>
+              </label>
+
+              <label class="field-label">
+                Tail Lines
+                <input v-model.number="logTailLines" type="number" min="10" max="2000" :disabled="!canViewPodLogs" />
+              </label>
+            </div>
+
+            <div v-if="!canViewPodLogs && !loadingPermissions" class="helper-text pod-tool-helper">
+              当前账号没有 `pods/log` 读取权限，日志面板已保持只读不可用。
+            </div>
+            <div v-else class="helper-text pod-tool-helper">
+              打开的日志页会默认追踪最新输出，你也可以在新页签中暂停追踪并调整输出行数后再刷新。
+            </div>
+          </section>
+
+          <section class="log-panel pod-tool-card">
+            <div class="pod-tool-header">
+              <div class="pod-tool-summary">
+                <h2 style="font-size: 15px">网页终端</h2>
+                <p>选择容器后在新的浏览器页签中打开终端，可直接进入 `/bin/sh` 或 `/bin/bash`。</p>
+              </div>
+              <div class="button-row pod-tool-actions">
+                <button
+                  class="button button-primary"
+                  :disabled="!canOpenTerminal"
+                  @click="openPodTerminalInNewTab('/bin/sh')"
+                >
+                  打开 sh 终端
+                </button>
+                <button
+                  class="button button-secondary"
+                  :disabled="!canOpenTerminal"
+                  @click="openPodTerminalInNewTab('/bin/bash')"
+                >
+                  打开 bash 终端
+                </button>
+              </div>
+            </div>
+
+            <div class="toolbar-grid terminal-toolbar">
+              <label class="field-label">
+                Container
+                <select v-model="selectedTerminalContainer" :disabled="!containerOptions.length || !canOpenTerminal">
+                  <option value="">自动选择</option>
+                  <option v-for="container in containerOptions" :key="`terminal:${container}`" :value="container">
+                    {{ container }}
+                  </option>
+                </select>
+              </label>
+
+              <label class="field-label">
+                Rows
+                <input v-model.number="terminalRows" type="number" min="12" max="120" :disabled="!canOpenTerminal" />
+              </label>
+
+              <label class="field-label">
+                Cols
+                <input v-model.number="terminalCols" type="number" min="40" max="240" :disabled="!canOpenTerminal" />
+              </label>
+            </div>
+
+            <div v-if="!canOpenTerminal && !loadingPermissions" class="helper-text pod-tool-helper">
+              当前账号没有 `pods/exec` 权限，终端功能不可用。
+            </div>
+            <div v-else class="helper-text pod-tool-helper">
+              新页签终端会直接连接到目标容器，并支持发送命令、回车、Ctrl+C 和终端尺寸调整。
+            </div>
+          </section>
         </div>
-
-        <section v-if="isPodResource && !isCreating" class="log-panel">
-          <div class="section-head">
-            <div>
-              <h2 style="font-size: 15px">Pod 日志</h2>
-              <p>选择好容器和输出行数后，会在新的浏览器页签中打开日志视图，并默认开启追踪模式。</p>
-            </div>
-            <button class="button button-primary" :disabled="!canViewPodLogs" @click="openPodLogsInNewTab">
-              查看日志
-            </button>
-          </div>
-
-          <div class="toolbar-grid logs-toolbar">
-            <label class="field-label">
-              Container
-              <select v-model="selectedLogContainer" :disabled="!containerOptions.length || !canViewPodLogs">
-                <option value="">自动选择</option>
-                <option v-for="container in containerOptions" :key="container" :value="container">
-                  {{ container }}
-                </option>
-              </select>
-            </label>
-
-            <label class="field-label">
-              Tail Lines
-              <input v-model.number="logTailLines" type="number" min="10" max="2000" :disabled="!canViewPodLogs" />
-            </label>
-          </div>
-
-          <div v-if="!canViewPodLogs && !loadingPermissions" class="helper-text" style="margin-bottom: 12px">
-            当前账号没有 `pods/log` 读取权限，日志面板已保持只读不可用。
-          </div>
-          <div v-else class="helper-text" style="margin-bottom: 12px">
-            打开的日志页会默认追踪最新输出，你也可以在新页签中暂停追踪并调整输出行数后再刷新。
-          </div>
-        </section>
-
-        <section v-if="isPodResource && !isCreating" class="log-panel">
-          <div class="section-head">
-            <div>
-              <h2 style="font-size: 15px">网页终端</h2>
-              <p>选择容器后在新的浏览器页签中打开终端，可直接进入 `/bin/sh` 或 `/bin/bash`。</p>
-            </div>
-            <div class="button-row">
-              <button
-                class="button button-primary"
-                :disabled="!canOpenTerminal"
-                @click="openPodTerminalInNewTab('/bin/sh')"
-              >
-                打开 sh 终端
-              </button>
-              <button
-                class="button button-secondary"
-                :disabled="!canOpenTerminal"
-                @click="openPodTerminalInNewTab('/bin/bash')"
-              >
-                打开 bash 终端
-              </button>
-            </div>
-          </div>
-
-          <div class="toolbar-grid terminal-toolbar">
-            <label class="field-label">
-              Container
-              <select v-model="selectedTerminalContainer" :disabled="!containerOptions.length || !canOpenTerminal">
-                <option value="">自动选择</option>
-                <option v-for="container in containerOptions" :key="`terminal:${container}`" :value="container">
-                  {{ container }}
-                </option>
-              </select>
-            </label>
-
-            <label class="field-label">
-              Rows
-              <input v-model.number="terminalRows" type="number" min="12" max="120" :disabled="!canOpenTerminal" />
-            </label>
-
-            <label class="field-label">
-              Cols
-              <input v-model.number="terminalCols" type="number" min="40" max="240" :disabled="!canOpenTerminal" />
-            </label>
-          </div>
-
-          <div v-if="!canOpenTerminal && !loadingPermissions" class="helper-text" style="margin-bottom: 12px">
-            当前账号没有 `pods/exec` 权限，终端功能不可用。
-          </div>
-          <div v-else class="helper-text" style="margin-bottom: 12px">
-            新页签终端会直接连接到目标容器，并支持发送命令、回车、Ctrl+C 和终端尺寸调整。
-          </div>
-        </section>
-
-        <section v-if="isPodResource && !isCreating" class="log-panel">
-          <div class="section-head">
-            <div>
-              <h2 style="font-size: 15px">Pod Exec</h2>
-              <p>当前先提供单次命令执行，适合快速排障和环境探针，后续再升级成交互式终端。</p>
-            </div>
-            <button
-              class="button button-secondary"
-              :disabled="executing || !canExecPod"
-              @click="executePodCommand"
-            >
-              {{ executing ? '执行中...' : '执行命令' }}
-            </button>
-          </div>
-
-          <div class="toolbar-grid logs-toolbar">
-            <label class="field-label">
-              Container
-              <select v-model="selectedExecContainer" :disabled="!containerOptions.length || !canExecPod">
-                <option value="">自动选择</option>
-                <option v-for="container in containerOptions" :key="`exec:${container}`" :value="container">
-                  {{ container }}
-                </option>
-              </select>
-            </label>
-
-            <label class="field-label">
-              Timeout
-              <input v-model.number="execTimeoutSeconds" type="number" min="3" max="60" :disabled="!canExecPod" />
-            </label>
-          </div>
-
-          <label class="field-label" style="margin-bottom: 12px">
-            Shell Command
-            <textarea
-              v-model="execCommand"
-              placeholder="例如：id && uname -a"
-              :disabled="!canExecPod"
-            />
-          </label>
-
-          <div v-if="!canExecPod && !loadingPermissions" class="helper-text" style="margin-bottom: 12px">
-            当前账号没有 `pods/exec` 权限，或当前集群未暴露 exec 子资源。
-          </div>
-          <div v-if="execError" class="error-text" style="margin-bottom: 12px">{{ execError }}</div>
-
-          <div v-if="execResponse" class="pill-row" style="margin-bottom: 12px">
-            <span class="pill">Exit: {{ execResponse.exit_code }}</span>
-            <span class="pill">Duration: {{ execResponse.duration_ms }}ms</span>
-            <span class="pill">Session: #{{ execResponse.session.id }}</span>
-          </div>
-          <pre
-            v-if="execResponse"
-            class="json-block log-block"
-          >$ {{ execResponse.shell_command }}
-
-{{ execResponse.stdout || '' }}{{ execResponse.stderr ? `\n[stderr]\n${execResponse.stderr}` : '' }}</pre>
-
-          <div class="section-head" style="margin-top: 16px">
-            <div>
-              <h2 style="font-size: 15px">最近 Exec 历史</h2>
-              <p>默认只展示当前账号在这个 Pod 上最近的执行记录，便于回看排障轨迹。</p>
-            </div>
-            <button
-              class="button button-secondary"
-              :disabled="loadingExecHistory"
-              @click="loadExecHistory"
-            >
-              {{ loadingExecHistory ? '读取中...' : '刷新历史' }}
-            </button>
-          </div>
-
-          <div v-if="execHistoryError" class="error-text" style="margin-bottom: 12px">{{ execHistoryError }}</div>
-          <div v-else-if="loadingExecHistory" class="helper-text">正在同步最近的 Exec 会话...</div>
-          <div v-else-if="execHistory.length" class="event-list">
-            <div
-              v-for="session in execHistory"
-              :key="session.id"
-              class="event-item"
-            >
-              <div class="button-row" style="justify-content: space-between">
-                <div class="button-row">
-                  <span class="status-badge" :class="sessionStatusClass(session.status)">
-                    {{ session.status }}
-                  </span>
-                  <strong>#{{ session.id }}</strong>
-                </div>
-                <span class="muted">{{ formatDateTime(session.created_at) }}</span>
-              </div>
-              <div class="muted" style="margin-top: 8px">
-                {{ session.container_name || 'auto-container' }} · exit {{ session.exit_code ?? '--' }} ·
-                {{ session.command.join(' ') || '--' }}
-              </div>
-              <div v-if="session.output_excerpt" class="helper-text" style="margin-top: 8px">
-                {{ session.output_excerpt }}
-              </div>
-            </div>
-          </div>
-          <div v-else class="helper-text">当前 Pod 还没有可展示的 Exec 历史。</div>
-        </section>
       </article>
     </section>
 
@@ -2465,13 +2643,6 @@ watch(
               {{ isCreating ? '取消草稿' : '关闭' }}
             </button>
           </div>
-        </div>
-
-        <div class="pill-row" style="margin-bottom: 12px">
-          <span class="pill">Kind: {{ selectedDetail.resource.kind }}</span>
-          <span class="pill">Name: {{ selectedDetail.metadata.name || '--draft--' }}</span>
-          <span class="pill" v-if="selectedDetail.metadata.namespace">名称空间: {{ selectedDetail.metadata.namespace }}</span>
-          <span class="pill">RV: {{ selectedDetail.metadata.resource_version || '--' }}</span>
         </div>
 
         <div v-if="applyError" class="error-text" style="margin-bottom: 12px">{{ applyError }}</div>

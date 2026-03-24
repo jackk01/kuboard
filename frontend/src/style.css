@@ -1225,9 +1225,170 @@ textarea {
   align-items: start;
 }
 
+.explorer-split-pods-equal {
+  align-items: stretch;
+}
+
+.explorer-split-pods-equal .explorer-list-panel,
+.explorer-split-pods-equal .explorer-detail-panel {
+  height: 100%;
+}
+
 .explorer-list-panel,
 .explorer-detail-panel {
   border-radius: 8px;
+}
+
+.explorer-list-summary {
+  margin-bottom: 12px;
+}
+
+.explorer-list-panel .section-head {
+  align-items: flex-end;
+}
+
+.explorer-list-panel .table th {
+  white-space: nowrap;
+}
+
+.explorer-sort-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: none;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+  transition: color 120ms ease;
+}
+
+.explorer-sort-button:hover {
+  color: var(--kb-primary-deep);
+}
+
+.explorer-sort-indicator {
+  min-width: 12px;
+  color: var(--kb-text-soft);
+  font-size: 11px;
+  text-align: center;
+  line-height: 1;
+}
+
+.explorer-list-head-actions {
+  width: min(260px, 100%);
+  flex: 0 0 auto;
+}
+
+.explorer-search-field {
+  min-width: 0;
+  gap: 0;
+  margin: 0;
+}
+
+.explorer-search-input {
+  height: 38px;
+  padding: 9px 12px;
+  border-radius: 999px;
+}
+
+.explorer-pagination {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.explorer-pagination-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid rgba(46, 80, 133, 0.12);
+  border-radius: 999px;
+  background: rgba(233, 237, 243, 0.9);
+  color: var(--kb-text-soft);
+  font-size: 12px;
+  line-height: 34px;
+  white-space: nowrap;
+}
+
+.explorer-pagination-controls {
+  min-width: 88px;
+  margin-left: auto;
+}
+
+.explorer-page-size-field {
+  gap: 0;
+  margin: 0;
+}
+
+.explorer-page-size-field select {
+  appearance: none;
+  -webkit-appearance: none;
+  height: 34px;
+  min-width: 72px;
+  padding: 6px 28px 6px 10px;
+  border: 1px solid rgba(46, 80, 133, 0.12);
+  border-radius: 999px;
+  background: rgba(233, 237, 243, 0.9);
+  background-image: linear-gradient(45deg, transparent 50%, rgba(144, 147, 153, 0.7) 50%),
+    linear-gradient(135deg, rgba(144, 147, 153, 0.7) 50%, transparent 50%);
+  background-position:
+    calc(100% - 15px) 14px,
+    calc(100% - 10px) 14px;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  color: var(--kb-text-soft);
+  box-shadow: none;
+  text-align: center;
+}
+
+.explorer-page-size-field select:focus {
+  border-color: rgba(46, 80, 133, 0.2);
+  box-shadow: 0 0 0 3px rgba(46, 80, 133, 0.08);
+}
+
+.explorer-pagination-actions {
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+}
+
+.explorer-pagination-button {
+  min-width: 52px;
+  min-height: 34px;
+  padding: 7px 12px;
+  line-height: 1;
+}
+
+.explorer-detail-panel .section-head {
+  align-items: center;
+}
+
+.explorer-detail-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(72px, 1fr));
+  gap: 8px;
+  min-width: 288px;
+  padding: 6px;
+  border: 1px solid rgba(46, 80, 133, 0.16);
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(245, 247, 250, 0.95), rgba(233, 237, 243, 0.8));
+  box-shadow: 0 8px 20px rgba(35, 72, 131, 0.1);
+}
+
+.explorer-detail-action {
+  width: auto;
+  min-height: 36px;
+  padding: 8px 14px;
+  border-radius: 9px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
 }
 
 .cluster-card {
@@ -1361,6 +1522,57 @@ textarea {
   background: #fff;
 }
 
+.pod-tools-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.pod-tool-card {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.pod-tool-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.pod-tool-summary {
+  min-width: 0;
+}
+
+.pod-tool-summary h2 {
+  margin: 0;
+}
+
+.pod-tool-summary p {
+  margin: 6px 0 0;
+  color: var(--kb-text-soft);
+  font-size: 13px;
+}
+
+.pod-tool-actions {
+  flex: 0 0 auto;
+  justify-content: flex-end;
+}
+
+.pod-tool-card .logs-toolbar,
+.pod-tool-card .terminal-toolbar {
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
+.pod-tool-helper {
+  margin-top: auto;
+  margin-bottom: 0;
+  padding-top: 12px;
+}
+
 .permission-grid {
   display: grid;
   gap: 10px;
@@ -1384,7 +1596,7 @@ textarea {
 }
 
 .terminal-toolbar {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1.2fr) repeat(2, minmax(120px, 0.5fr));
   margin-top: 12px;
 }
 
@@ -1434,6 +1646,19 @@ textarea {
 @media (max-width: 1080px) {
   .app-shell {
     grid-template-columns: 1fr;
+  }
+
+  .pod-tools-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .pod-tool-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .pod-tool-actions {
+    width: 100%;
   }
 
   .shell-sidebar {
@@ -1547,6 +1772,22 @@ textarea {
   .button-row {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .explorer-pagination {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .explorer-detail-panel .section-head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .explorer-detail-actions {
+    width: 100%;
+    min-width: 0;
+    grid-template-columns: 1fr;
   }
 
   .button {
