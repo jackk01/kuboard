@@ -219,7 +219,12 @@ export interface ResourceSchemaResponse {
   schema: Record<string, any>
   schema_name: string
   source: 'crd' | 'openapi-v3' | 'inferred'
-  metadata: Record<string, any>
+  metadata: {
+    sample_count?: number
+    sample_namespace?: string | null
+    empty_sample?: boolean
+    [key: string]: unknown
+  }
 }
 
 export interface StreamSessionSummary {

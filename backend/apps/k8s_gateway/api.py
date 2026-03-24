@@ -325,9 +325,15 @@ class ResourceSchemaView(APIView):
         cluster = get_object_or_404(Cluster.objects.select_related("credential", "capability", "health"), pk=pk)
         client = KubernetesClient(cluster, actor=request.user)
         query_group = "" if group == "core" else group
+        namespace = request.query_params.get("namespace") or None
 
         try:
-            payload = client.get_resource_schema(group=query_group, version=version, resource=resource)
+            payload = client.get_resource_schema(
+                group=query_group,
+                version=version,
+                resource=resource,
+                namespace=namespace,
+            )
         except KubernetesAPIError as exc:
             record_audit_event(
                 event_type="k8s.resource.schema",

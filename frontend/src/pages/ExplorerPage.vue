@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 
+import ConfirmDialog from '../components/ConfirmDialog.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import { ApiError, apiRequest } from '../lib/api'
 import { useClusterStore } from '../stores/clusters'
@@ -21,6 +23,7 @@ import type {
 } from '../types'
 
 const clusterStore = useClusterStore()
+const router = useRouter()
 type WatchEventItem = ResourceWatchResponse['events'][number] & { received_at: string }
 
 const selectedClusterId = ref('')
@@ -40,6 +43,7 @@ const editorText = ref('')
 const isEditing = ref(false)
 const isCreating = ref(false)
 const editorMode = ref<'yaml' | 'form'>('yaml')
+const yamlDialogOpen = ref(false)
 const detailError = ref('')
 const permissionError = ref('')
 const schemaError = ref('')
@@ -50,6 +54,8 @@ const loadingPermissions = ref(false)
 const loadingSchema = ref(false)
 const applying = ref(false)
 const deleting = ref(false)
+const deleteDialogVisible = ref(false)
+const pendingDeleteName = ref('')
 const watchActive = ref(false)
 const watchLoading = ref(false)
 const watchEvents = ref<WatchEventItem[]>([])
@@ -60,6 +66,7 @@ const execResponse = ref<PodExecResponse | null>(null)
 const execError = ref('')
 const executing = ref(false)
 const selectedExecContainer = ref('')
+const selectedTerminalContainer = ref('')
 const execCommand = ref('id')
 const execTimeoutSeconds = ref(15)
 const execHistory = ref<StreamSessionRecord[]>([])
@@ -115,7 +122,6 @@ const commonResourcePresets = [
     labelZh: '部署',
     category: 'workload',
     categoryZh: '工作负载',
-    icon: 'WL',
     group: 'apps',
     version: 'v1',
     resource: 'deployments',
@@ -126,7 +132,6 @@ const commonResourcePresets = [
     labelZh: '有状态应用',
     category: 'workload',
     categoryZh: '工作负载',
-    icon: 'WL',
     group: 'apps',
     version: 'v1',
     resource: 'statefulsets',
@@ -137,7 +142,6 @@ const commonResourcePresets = [
     labelZh: '守护进程集',
     category: 'workload',
     categoryZh: '工作负载',
-    icon: 'WL',
     group: 'apps',
     version: 'v1',
     resource: 'daemonsets',
@@ -148,7 +152,6 @@ const commonResourcePresets = [
     labelZh: 'Pod 实例',
     category: 'workload',
     categoryZh: '工作负载',
-    icon: 'WL',
     group: 'core',
     version: 'v1',
     resource: 'pods',
@@ -159,7 +162,6 @@ const commonResourcePresets = [
     labelZh: '一次性任务',
     category: 'workload',
     categoryZh: '工作负载',
-    icon: 'WL',
     group: 'batch',
     version: 'v1',
     resource: 'jobs',
@@ -170,7 +172,6 @@ const commonResourcePresets = [
     labelZh: '定时任务',
     category: 'workload',
     categoryZh: '工作负载',
-    icon: 'WL',
     group: 'batch',
     version: 'v1',
     resource: 'cronjobs',
@@ -181,7 +182,6 @@ const commonResourcePresets = [
     labelZh: '服务发现',
     category: 'network',
     categoryZh: '网络访问',
-    icon: 'NW',
     group: 'core',
     version: 'v1',
     resource: 'services',
@@ -192,7 +192,6 @@ const commonResourcePresets = [
     labelZh: '入口路由',
     category: 'network',
     categoryZh: '网络访问',
-    icon: 'NW',
     group: 'networking.k8s.io',
     version: 'v1',
     resource: 'ingresses',
@@ -203,7 +202,6 @@ const commonResourcePresets = [
     labelZh: '配置',
     category: 'config',
     categoryZh: '配置与密钥',
-    icon: 'CF',
     group: 'core',
     version: 'v1',
     resource: 'configmaps',
@@ -214,7 +212,6 @@ const commonResourcePresets = [
     labelZh: '密钥',
     category: 'config',
     categoryZh: '配置与密钥',
-    icon: 'CF',
     group: 'core',
     version: 'v1',
     resource: 'secrets',
@@ -382,6 +379,13 @@ const schemaPreviewItems = computed(() => {
 const schemaJsonPreview = computed(() =>
   resourceSchema.value ? JSON.stringify(resourceSchema.value.schema, null, 2) : '// 选择资源后在这里查看结构化 schema',
 )
+const schemaSampleHint = computed(() => {
+  if (!resourceSchema.value || resourceSchema.value.source !== 'inferred' || !resourceSchema.value.metadata.empty_sample) {
+    return ''
+  }
+  const namespace = String(resourceSchema.value.metadata.sample_namespace || selectedNamespace.value || '--')
+  return `当前名称空间 ${namespace} 下暂无该资源实例，Schema 预览已回退为基础结构。`
+})
 const formEditableFields = computed(() => {
   const results: Array<{ path: string; type: string; required: boolean; description: string }> = []
 
@@ -538,6 +542,7 @@ function resetSchemaState() {
 function resetFormEditorState() {
   formDraftObject.value = null
   editorMode.value = 'yaml'
+  yamlDialogOpen.value = false
 }
 
 function resetCreateState() {
@@ -816,6 +821,7 @@ function updateContainerSelection(nextContainers: string[]) {
   if (!nextContainers.length) {
     selectedLogContainer.value = ''
     selectedExecContainer.value = ''
+    selectedTerminalContainer.value = ''
     return
   }
   if (!selectedLogContainer.value || !nextContainers.includes(selectedLogContainer.value)) {
@@ -823,6 +829,9 @@ function updateContainerSelection(nextContainers: string[]) {
   }
   if (!selectedExecContainer.value || !nextContainers.includes(selectedExecContainer.value)) {
     selectedExecContainer.value = nextContainers[0] ?? ''
+  }
+  if (!selectedTerminalContainer.value || !nextContainers.includes(selectedTerminalContainer.value)) {
+    selectedTerminalContainer.value = nextContainers[0] ?? ''
   }
 }
 
@@ -837,6 +846,7 @@ function clearSelectedResourceState(message = '') {
   isEditing.value = false
   isCreating.value = false
   editorMode.value = 'yaml'
+  yamlDialogOpen.value = false
   detailError.value = ''
   permissionError.value = ''
   applyError.value = ''
@@ -955,35 +965,39 @@ function formatAge(timestamp?: string) {
   return `${Math.floor(diffHours / 24)}d`
 }
 
-async function loadDiscovery() {
+async function loadDiscovery(options: { preserveSelection?: boolean; resetState?: boolean; preferredNamespace?: string } = {}) {
   if (!selectedClusterId.value) {
     return
   }
 
-  stopWatching()
-  clearDetailRefreshTimer()
   loadingDiscovery.value = true
   discoveryError.value = ''
-  resourceList.value = null
-  selectedItem.value = null
-  selectedDetail.value = null
-  resourcePermissions.value = null
-  resourceSchema.value = null
-  formDraftObject.value = null
-  editorText.value = ''
-  isEditing.value = false
-  permissionError.value = ''
-  schemaError.value = ''
-  applyError.value = ''
-  applyMessage.value = ''
-  watchSyncMessage.value = ''
-  resetLogState()
-  resetExecState()
-  resetExecHistory()
-  resetTerminalState()
-  resetSchemaState()
-  resetFormEditorState()
-  resetCreateState()
+  const resetState = options.resetState !== false
+
+  if (resetState) {
+    stopWatching()
+    clearDetailRefreshTimer()
+    resourceList.value = null
+    selectedItem.value = null
+    selectedDetail.value = null
+    resourcePermissions.value = null
+    resourceSchema.value = null
+    formDraftObject.value = null
+    editorText.value = ''
+    isEditing.value = false
+    permissionError.value = ''
+    schemaError.value = ''
+    applyError.value = ''
+    applyMessage.value = ''
+    watchSyncMessage.value = ''
+    resetLogState()
+    resetExecState()
+    resetExecHistory()
+    resetTerminalState()
+    resetSchemaState()
+    resetFormEditorState()
+    resetCreateState()
+  }
 
   try {
     const payload = await apiRequest<ClusterDiscoveryResponse>(
@@ -993,12 +1007,40 @@ async function loadDiscovery() {
     await clusterStore.fetchClusters()
     const preferredGroup =
       payload.groups.find((group) => group.group === 'core' && group.version === 'v1') ?? payload.groups[0]
-    selectedGroupKey.value = preferredGroup ? `${preferredGroup.group}::${preferredGroup.version}` : ''
-    selectedResourceName.value =
-      preferredGroup?.resources.find((resource) => resource.name === 'pods')?.name ??
-      preferredGroup?.resources[0]?.name ??
-      ''
-    selectedNamespace.value = payload.context.default_namespace || payload.namespaces[0]?.name || 'default'
+    const preferredGroupKey = preferredGroup ? `${preferredGroup.group}::${preferredGroup.version}` : ''
+    const currentGroup = payload.groups.find(
+      (group) => `${group.group}::${group.version}` === selectedGroupKey.value,
+    )
+
+    if (options.preserveSelection && currentGroup) {
+      selectedGroupKey.value = `${currentGroup.group}::${currentGroup.version}`
+      if (!currentGroup.resources.some((resource) => resource.name === selectedResourceName.value)) {
+        selectedResourceName.value =
+          currentGroup.resources.find((resource) => resource.name === 'pods')?.name ??
+          currentGroup.resources[0]?.name ??
+          ''
+      }
+    } else {
+      selectedGroupKey.value = preferredGroupKey
+      selectedResourceName.value =
+        preferredGroup?.resources.find((resource) => resource.name === 'pods')?.name ??
+        preferredGroup?.resources[0]?.name ??
+        ''
+    }
+
+    if (selectedResource.value?.namespaced) {
+      const nextNamespace =
+        options.preferredNamespace ||
+        selectedNamespace.value ||
+        payload.context.default_namespace ||
+        payload.namespaces[0]?.name ||
+        'default'
+      selectedNamespace.value = payload.namespaces.some((namespace) => namespace.name === nextNamespace)
+        ? nextNamespace
+        : payload.context.default_namespace || payload.namespaces[0]?.name || 'default'
+    } else {
+      selectedNamespace.value = ''
+    }
   } catch (error) {
     if (error instanceof ApiError) {
       discoveryError.value = error.message
@@ -1057,13 +1099,17 @@ async function loadResourceSchema() {
   schemaError.value = ''
 
   try {
+    const query = new URLSearchParams()
+    if (selectedResource.value?.namespaced && selectedNamespace.value) {
+      query.set('namespace', selectedNamespace.value)
+    }
     resourceSchema.value = await apiRequest<ResourceSchemaResponse>(
-      `/api/v1/clusters/${selectedClusterId.value}/schemas/${selectedGroup.value.group}/${selectedGroup.value.version}/${selectedResourceName.value}`,
+      `/api/v1/clusters/${selectedClusterId.value}/schemas/${selectedGroup.value.group}/${selectedGroup.value.version}/${selectedResourceName.value}${query.toString() ? `?${query.toString()}` : ''}`,
     )
   } catch (error) {
     resourceSchema.value = null
     if (error instanceof ApiError) {
-      schemaError.value = error.message
+      schemaError.value = error.status >= 500 ? '当前资源暂无可用 Schema，已等待后端返回基础结构。' : error.message
     } else {
       schemaError.value = '资源 Schema 读取失败。'
     }
@@ -1256,6 +1302,7 @@ function startEditing(mode: 'yaml' | 'form' = 'yaml') {
   editorMode.value = mode
   editorText.value = selectedDetail.value.yaml
   hydrateFormDraft(selectedDetail.value.object)
+  yamlDialogOpen.value = mode === 'yaml'
 }
 
 function startCreating(mode: 'yaml' | 'form' = 'yaml') {
@@ -1280,6 +1327,7 @@ function startCreating(mode: 'yaml' | 'form' = 'yaml') {
   editorMode.value = mode
   editorText.value = draftDetail.yaml
   hydrateFormDraft(draftDetail.object)
+  yamlDialogOpen.value = mode === 'yaml'
   detailError.value = ''
   applyError.value = ''
   applyMessage.value = ''
@@ -1296,6 +1344,7 @@ async function cancelEditing() {
     resetCreateState()
     isEditing.value = false
     editorMode.value = 'yaml'
+    yamlDialogOpen.value = false
     editorText.value = ''
     hydrateFormDraft(null)
     applyError.value = ''
@@ -1312,10 +1361,67 @@ async function cancelEditing() {
 
   isEditing.value = false
   editorMode.value = 'yaml'
+  yamlDialogOpen.value = false
   editorText.value = selectedDetail.value?.yaml || ''
   hydrateFormDraft(selectedDetail.value?.object ?? null)
   applyError.value = ''
   applyMessage.value = ''
+}
+
+function openYamlDialog() {
+  if (!selectedDetail.value) {
+    return
+  }
+  if (!isEditing.value || editorMode.value !== 'yaml') {
+    startEditing('yaml')
+    return
+  }
+  yamlDialogOpen.value = true
+}
+
+function closeYamlDialog() {
+  yamlDialogOpen.value = false
+}
+
+function openPodLogsInNewTab() {
+  if (!selectedClusterId.value || !selectedDetail.value || !isPodResource.value || !canViewPodLogs.value) {
+    return
+  }
+
+  const target = router.resolve({
+    name: 'pod-logs',
+    query: {
+      cluster: selectedClusterId.value,
+      pod: selectedDetail.value.metadata.name,
+      namespace: selectedDetail.value.metadata.namespace || selectedNamespaceOrDefault.value,
+      container: selectedLogContainer.value || undefined,
+      tail_lines: String(logTailLines.value),
+      follow: 'true',
+    },
+  })
+
+  window.open(target.href, '_blank', 'noopener,noreferrer')
+}
+
+function openPodTerminalInNewTab(shell: '/bin/sh' | '/bin/bash') {
+  if (!selectedClusterId.value || !selectedDetail.value || !isPodResource.value || !canOpenTerminal.value) {
+    return
+  }
+
+  const target = router.resolve({
+    name: 'pod-terminal',
+    query: {
+      cluster: selectedClusterId.value,
+      pod: selectedDetail.value.metadata.name,
+      namespace: selectedDetail.value.metadata.namespace || selectedNamespaceOrDefault.value,
+      container: selectedTerminalContainer.value || undefined,
+      shell,
+      rows: String(terminalRows.value),
+      cols: String(terminalCols.value),
+    },
+  })
+
+  window.open(target.href, '_blank', 'noopener,noreferrer')
 }
 
 async function submitCreate(dryRun = false) {
@@ -1358,9 +1464,11 @@ async function submitCreate(dryRun = false) {
     selectedDetail.value = payload
     editorText.value = payload.yaml
     hydrateFormDraft(payload.object)
+    yamlDialogOpen.value = dryRun || isCreating.value
     applyMessage.value = dryRun ? 'Dry-run 创建校验通过，后端已返回预览对象。' : 'Create 成功，资源已创建。'
     if (!dryRun) {
       isEditing.value = false
+      yamlDialogOpen.value = false
       resetCreateState()
       const successMessage = applyMessage.value
       await loadResources({
@@ -1420,9 +1528,11 @@ async function submitApply(dryRun = false) {
     selectedDetail.value = payload
     editorText.value = payload.yaml
     hydrateFormDraft(payload.object)
+    yamlDialogOpen.value = dryRun
     applyMessage.value = dryRun ? 'Dry-run 校验通过，后端已接受并返回预览对象。' : 'Apply 成功，资源已更新。'
     if (!dryRun) {
       isEditing.value = false
+      yamlDialogOpen.value = false
       const successMessage = applyMessage.value
       await loadResources({
         preserveFeedback: true,
@@ -1457,10 +1567,34 @@ async function deleteResource() {
     return
   }
 
-  const confirmed = window.confirm(`确认删除资源 ${targetName} 吗？这个操作不可撤销。`)
-  if (!confirmed) {
+  pendingDeleteName.value = targetName
+  deleteDialogVisible.value = true
+}
+
+function cancelDeleteResource() {
+  deleteDialogVisible.value = false
+  pendingDeleteName.value = ''
+}
+
+async function confirmDeleteResource() {
+  if (
+    !selectedClusterId.value ||
+    !selectedGroup.value ||
+    !selectedResourceName.value ||
+    !selectedItem.value ||
+    !canDeleteResource.value
+  ) {
+    cancelDeleteResource()
     return
   }
+
+  const targetName = pendingDeleteName.value || selectedItem.value.metadata?.name || ''
+  if (!targetName) {
+    cancelDeleteResource()
+    return
+  }
+
+  deleteDialogVisible.value = false
 
   deleting.value = true
   applyError.value = ''
@@ -1493,6 +1627,7 @@ async function deleteResource() {
     }
   } finally {
     deleting.value = false
+    pendingDeleteName.value = ''
   }
 }
 
@@ -1884,7 +2019,9 @@ watch(selectedClusterId, async (value, oldValue) => {
 })
 
 watch(selectedGroupKey, () => {
-  selectedResourceName.value = resources.value[0]?.name ?? ''
+  if (!resources.value.some((resource) => resource.name === selectedResourceName.value)) {
+    selectedResourceName.value = resources.value[0]?.name ?? ''
+  }
 })
 
 watch(
@@ -1902,9 +2039,16 @@ watch(
 
 watch(
   [selectedGroupKey, selectedResourceName, selectedNamespace],
-  async ([groupKey, resourceName]) => {
+  async ([groupKey, resourceName, namespace], [, , previousNamespace]) => {
     if (!groupKey || !resourceName) {
       return
+    }
+    if (namespace !== previousNamespace && selectedClusterId.value) {
+      await loadDiscovery({
+        preserveSelection: true,
+        resetState: false,
+        preferredNamespace: namespace,
+      })
     }
     await loadResources()
   },
@@ -1919,12 +2063,10 @@ watch(
           <div class="eyebrow" style="color: var(--kb-primary-deep)">Explorer</div>
           <h2 class="page-title">资源浏览</h2>
           <p class="page-description">
-            这里已经接上后端 Discovery 和通用资源列表接口。导入可访问的 kubeconfig 后，可以浏览集群内的常见资源。
+            这里会在切换集群时自动同步 Discovery 和通用资源列表接口。导入可访问的 kubeconfig 后，可以直接浏览集群内的常见资源。
           </p>
         </div>
-        <button class="button button-secondary" :disabled="loadingDiscovery" @click="loadDiscovery">
-          {{ loadingDiscovery ? '同步中...' : '刷新 Discovery' }}
-        </button>
+        <span class="helper-text">{{ loadingDiscovery ? '正在自动同步 Discovery...' : 'Discovery 自动同步已开启' }}</span>
       </div>
 
       <div class="toolbar-grid">
@@ -1934,26 +2076,6 @@ watch(
             <option disabled value="">请选择集群</option>
             <option v-for="cluster in clusterStore.items" :key="cluster.id" :value="cluster.id">
               {{ cluster.name }}
-            </option>
-          </select>
-        </label>
-
-        <label class="field-label">
-          API Group / Version
-          <select v-model="selectedGroupKey" :disabled="!discovery">
-            <option disabled value="">请选择资源组</option>
-            <option v-for="group in discovery?.groups ?? []" :key="`${group.group}::${group.version}`" :value="`${group.group}::${group.version}`">
-              {{ group.group }} / {{ group.version }}
-            </option>
-          </select>
-        </label>
-
-        <label class="field-label">
-          Resource
-          <select v-model="selectedResourceName" :disabled="!resources.length">
-            <option disabled value="">请选择资源</option>
-            <option v-for="resource in resources" :key="resource.name" :value="resource.name">
-              {{ resource.name }} ({{ resource.kind }})
             </option>
           </select>
         </label>
@@ -1972,8 +2094,8 @@ watch(
       <div class="explorer-quick-surface">
         <div class="section-head" style="margin-bottom: 10px">
           <div>
-            <h2>常用资源一键直达</h2>
-            <p>不需要理解 API Group，直接点击资源名称即可查看。</p>
+            <h2>常用资源</h2>
+            <p>点击资源名称即可查看。</p>
           </div>
         </div>
         <div class="explorer-quick-tabs">
@@ -1995,7 +2117,6 @@ watch(
             :class="item.active ? 'explorer-quick-btn-active' : 'button-secondary'"
             @click="activateCommonResource(item)"
           >
-            <span class="explorer-quick-icon">{{ item.icon }}</span>
             <span class="explorer-quick-name">{{ item.labelZh }}</span>
             <span class="explorer-quick-sub">{{ item.label }}</span>
           </button>
@@ -2084,7 +2205,7 @@ watch(
         <div class="section-head">
           <div>
             <h2>详情与 YAML</h2>
-            <p>现在支持资源新建、YAML/JSON 与基础表单双模式编辑，会先探测真实权限，再决定是否允许修改或创建。</p>
+            <p>现在支持资源新建与 YAML/JSON 编辑，会先探测真实权限，再决定是否允许修改或创建。</p>
           </div>
           <div class="button-row">
             <button
@@ -2097,30 +2218,9 @@ watch(
             <button
               class="button button-secondary"
               :disabled="!selectedDetail || loadingPermissions || (isCreating ? !canCreateResource : !canEditYaml)"
-              @click="isCreating ? startEditing('yaml') : isEditing && editorMode === 'yaml' ? cancelEditing() : startEditing('yaml')"
+              @click="openYamlDialog"
             >
-              {{ isCreating ? 'YAML 草稿' : isEditing && editorMode === 'yaml' ? '取消 YAML' : 'YAML 编辑' }}
-            </button>
-            <button
-              class="button button-secondary"
-              :disabled="!selectedDetail || loadingPermissions || (isCreating ? !canCreateResource : !canEditYaml) || !supportsFormEditing"
-              @click="isCreating ? startEditing('form') : isEditing && editorMode === 'form' ? cancelEditing() : startEditing('form')"
-            >
-              {{ isCreating ? '表单草稿' : isEditing && editorMode === 'form' ? '取消表单' : '表单编辑' }}
-            </button>
-            <button
-              class="button button-secondary"
-              :disabled="!selectedDetail || applying || !isEditing || (isCreating ? !canCreateResource : !canEditYaml)"
-              @click="isCreating ? submitCreate(true) : submitApply(true)"
-            >
-              {{ applying ? '处理中...' : isCreating ? 'Dry-run Create' : 'Dry-run' }}
-            </button>
-            <button
-              class="button button-primary"
-              :disabled="!selectedDetail || applying || !isEditing || (isCreating ? !canCreateResource : !canEditYaml)"
-              @click="isCreating ? submitCreate(false) : submitApply(false)"
-            >
-              {{ applying ? (isCreating ? '创建中...' : '提交中...') : isCreating ? 'Create' : 'Apply' }}
+              {{ isCreating ? '查看 YAML 草稿' : '查看 YAML' }}
             </button>
             <button
               class="button button-secondary"
@@ -2148,230 +2248,15 @@ watch(
           <span class="pill">RV: {{ selectedDetail.metadata.resource_version || '--' }}</span>
         </div>
 
-        <div v-if="selectedDetail" class="permission-card" style="margin-bottom: 14px">
-          <div class="section-head" style="margin-bottom: 12px">
-            <div>
-              <h2 style="font-size: 15px">权限感知</h2>
-              <p>权限结果来自 Kubernetes 自身鉴权接口，不依赖前端静态猜测。</p>
-            </div>
-            <span v-if="loadingPermissions" class="helper-text">探测中...</span>
-          </div>
-
-          <div v-if="permissionEntries.length" class="permission-grid">
-            <div v-for="permission in permissionEntries" :key="permission.key" class="permission-chip">
-              <span>{{ permission.label }}</span>
-              <span
-                class="status-badge"
-                :class="permission.allowed ? 'status-ready' : 'status-denied'"
-              >
-                {{ permission.allowed ? 'allowed' : 'denied' }}
-              </span>
-            </div>
-          </div>
-          <div v-if="subresourceEntries.length" class="permission-grid" style="margin-top: 10px">
-            <div v-for="permission in subresourceEntries" :key="permission.key" class="permission-chip">
-              <span>{{ permission.label }}</span>
-              <span
-                class="status-badge"
-                :class="permission.allowed ? 'status-ready' : 'status-denied'"
-              >
-                {{ permission.allowed ? 'allowed' : 'denied' }}
-              </span>
-            </div>
-          </div>
-          <div
-            v-if="selectedDetail && !loadingPermissions && !permissionError && isCreating && !canCreateResource"
-            class="helper-text"
-            style="margin-top: 12px"
-          >
-            当前账号没有该资源的 create 权限，新建草稿已保留，但不能提交。
-          </div>
-          <div
-            v-else-if="selectedDetail && !loadingPermissions && !permissionError && !isCreating && !canEditYaml"
-            class="helper-text"
-            style="margin-top: 12px"
-          >
-            当前账号没有该对象的更新或 patch 权限，YAML 编辑已自动转为只读模式。
-          </div>
-        </div>
-
-        <div v-if="selectedResource" class="permission-card" style="margin-bottom: 14px">
-          <div class="section-head" style="margin-bottom: 12px">
-            <div>
-              <h2 style="font-size: 15px">Schema 预览</h2>
-              <p>优先使用 CRD/OpenAPI 结构，拿不到时回退到样本对象推断，先为表单编辑器铺底。</p>
-            </div>
-            <span v-if="loadingSchema" class="helper-text">读取中...</span>
-          </div>
-
-          <div v-if="schemaError" class="error-text" style="margin-bottom: 12px">{{ schemaError }}</div>
-          <template v-else-if="resourceSchema">
-            <div class="pill-row" style="margin-bottom: 12px">
-              <span class="pill">Source: {{ schemaSourceLabel(resourceSchema.source) }}</span>
-              <span class="pill">Schema: {{ resourceSchema.schema_name || '--' }}</span>
-            </div>
-
-            <div v-if="schemaPreviewItems.length" class="schema-list">
-              <div
-                v-for="field in schemaPreviewItems"
-                :key="field.path"
-                class="schema-item"
-              >
-                <div class="button-row" style="justify-content: space-between">
-                  <strong :style="{ paddingLeft: `${field.depth * 12}px` }">{{ field.path }}</strong>
-                  <span class="status-badge" :class="field.required ? 'status-warning' : 'status-info'">
-                    {{ field.type }}
-                  </span>
-                </div>
-                <div class="muted" style="margin-top: 8px">
-                  {{ field.required ? 'required' : 'optional' }}{{ field.description ? ` · ${field.description}` : '' }}
-                </div>
-              </div>
-            </div>
-            <div v-else class="helper-text" style="margin-bottom: 12px">
-              当前 schema 没有可展开的 `properties`，但原始结构仍可在下面查看。
-            </div>
-
-            <pre class="json-block" style="margin-top: 12px; max-height: 260px">{{ schemaJsonPreview }}</pre>
-          </template>
-          <div v-else class="helper-text">切换到具体资源后，这里会显示对应结构描述。</div>
-        </div>
-
-        <div v-if="selectedDetail" class="permission-card" style="margin-bottom: 14px">
-          <div class="section-head" style="margin-bottom: 12px">
-            <div>
-              <h2 style="font-size: 15px">资源 Watch</h2>
-              <p>基于 Kubernetes Watch API 持续拉取增量事件，用来观察资源变化而不是重复全量刷新。</p>
-            </div>
-            <div class="button-row">
-              <button
-                class="button button-secondary"
-                :disabled="(!canWatchResources && !watchActive) || loadingPermissions"
-                @click="watchActive ? stopWatching({ keepEvents: true }) : startWatching()"
-              >
-                {{ watchActive ? '停止 Watch' : watchLoading ? '连接中...' : '开始 Watch' }}
-              </button>
-            </div>
-          </div>
-
-          <div class="pill-row" style="margin-bottom: 12px">
-            <span class="pill">Cursor: {{ watchCursor || resourceList?.metadata.resource_version || '--' }}</span>
-            <span class="pill">Events: {{ watchEvents.length }}</span>
-            <span class="pill">{{ watchActive ? '状态: watching' : '状态: idle' }}</span>
-          </div>
-
-          <div v-if="!canWatchResources && !loadingPermissions" class="helper-text" style="margin-bottom: 12px">
-            当前账号没有该资源的 watch 权限，因此这里只展示静态列表。
-          </div>
-          <div v-if="watchError" class="error-text" style="margin-bottom: 12px">{{ watchError }}</div>
-          <div v-if="watchSyncMessage" class="helper-text" style="margin-bottom: 12px">{{ watchSyncMessage }}</div>
-
-          <div v-if="watchEvents.length" class="event-list">
-            <div
-              v-for="event in watchEvents"
-              :key="`${event.type}:${event.metadata.namespace}:${event.metadata.name}:${event.metadata.resource_version}:${event.received_at}`"
-              class="event-item"
-            >
-              <div class="button-row" style="justify-content: space-between">
-                <div class="button-row">
-                  <span class="status-badge" :class="watchEventBadgeClass(event.type)">
-                    {{ event.type.toLowerCase() }}
-                  </span>
-                  <strong>{{ event.metadata.name || '--' }}</strong>
-                </div>
-                <span class="muted">{{ formatWatchTime(event.received_at) }}</span>
-              </div>
-              <div class="muted" style="margin-top: 8px">
-                {{ event.metadata.kind || selectedDetail.resource.kind }} · 名称空间 {{ event.metadata.namespace || '--' }} · rv
-                {{ event.metadata.resource_version || '--' }}
-              </div>
-            </div>
-          </div>
-          <div v-else class="helper-text">
-            {{ watchLoading ? 'Watch 已连接，正在等待事件...' : '开始 Watch 后，这里会显示最近的 ADDED / MODIFIED / DELETED / BOOKMARK 事件。' }}
-          </div>
-        </div>
-
-        <div v-if="isEditing && editorMode === 'form'" class="permission-card" style="margin-bottom: 14px">
-          <div class="section-head" style="margin-bottom: 12px">
-            <div>
-              <h2 style="font-size: 15px">表单编辑器 Beta</h2>
-              <p>这里优先暴露 schema 中识别出的常见标量字段，复杂对象仍建议切回 YAML 模式处理。</p>
-            </div>
-          </div>
-
-          <div v-if="formEditableFields.length" class="form-grid">
-            <label
-              v-for="field in formEditableFields"
-              :key="field.path"
-              class="field-label"
-            >
-              {{ field.path }}
-              <input
-                v-if="field.type === 'string'"
-                :value="String(getValueAtPath(formDraftObject, field.path) ?? '')"
-                type="text"
-                @input="updateFormField(field.path, field.type, ($event.target as HTMLInputElement).value)"
-              />
-              <input
-                v-else-if="field.type === 'integer' || field.type === 'number'"
-                :value="String(getValueAtPath(formDraftObject, field.path) ?? '')"
-                :type="field.type === 'integer' ? 'number' : 'text'"
-                @input="updateFormField(field.path, field.type, ($event.target as HTMLInputElement).value)"
-              />
-              <select
-                v-else-if="field.type === 'boolean'"
-                :value="String(Boolean(getValueAtPath(formDraftObject, field.path)))"
-                @change="updateFormField(field.path, field.type, ($event.target as HTMLSelectElement).value === 'true')"
-              >
-                <option value="true">true</option>
-                <option value="false">false</option>
-              </select>
-              <input
-                v-else
-                :value="String(getValueAtPath(formDraftObject, field.path) ?? '')"
-                type="text"
-                @input="updateFormField(field.path, field.type, ($event.target as HTMLInputElement).value)"
-              />
-              <span class="muted">
-                {{ field.required ? 'required' : 'optional' }}{{ field.description ? ` · ${field.description}` : '' }}
-              </span>
-            </label>
-          </div>
-          <div v-else class="helper-text">
-            当前资源没有可安全表单编辑的 schema 字段，请切换回 YAML 模式。
-          </div>
-        </div>
-        <textarea
-          v-else-if="isEditing"
-          v-model="editorText"
-          class="editor-surface"
-          spellcheck="false"
-        />
-        <pre v-else class="json-block">{{ selectedDetail?.yaml || previewJson }}</pre>
-
         <section v-if="isPodResource && !isCreating" class="log-panel">
           <div class="section-head">
             <div>
               <h2 style="font-size: 15px">Pod 日志</h2>
-              <p>现在支持基础读取和持续跟随；先用短轮询做稳定版 follow，后续再升级成真正的流式追踪。</p>
+              <p>选择好容器和输出行数后，会在新的浏览器页签中打开日志视图，并默认开启追踪模式。</p>
             </div>
-            <div class="button-row">
-              <button
-                class="button button-secondary"
-                :disabled="loadingLogs || !canViewPodLogs || logsFollowing"
-                @click="() => loadPodLogs()"
-              >
-                {{ loadingLogs ? '读取中...' : logsResponse ? '刷新日志' : '查看日志' }}
-              </button>
-              <button
-                class="button button-secondary"
-                :disabled="loadingLogs || !canViewPodLogs"
-                @click="logsFollowing ? stopLogFollowing() : startLogFollowing()"
-              >
-                {{ logsFollowing ? '停止跟随' : '开始跟随' }}
-              </button>
-            </div>
+            <button class="button button-primary" :disabled="!canViewPodLogs" @click="openPodLogsInNewTab">
+              查看日志
+            </button>
           </div>
 
           <div class="toolbar-grid logs-toolbar">
@@ -2391,52 +2276,46 @@ watch(
             </label>
           </div>
 
-          <div v-if="logsResponse || logFollowSession" class="pill-row" style="margin-bottom: 12px">
-            <span class="pill">状态: {{ logsFollowing ? 'following' : 'idle' }}</span>
-            <span class="pill">Cursor: {{ logFollowCursor || logsResponse?.cursor.since_time || '--' }}</span>
-            <span class="pill" v-if="logFollowSession">Session: #{{ logFollowSession.id }}</span>
-          </div>
-
           <div v-if="!canViewPodLogs && !loadingPermissions" class="helper-text" style="margin-bottom: 12px">
             当前账号没有 `pods/log` 读取权限，日志面板已保持只读不可用。
           </div>
-          <div v-if="logsError" class="error-text" style="margin-bottom: 12px">{{ logsError }}</div>
-          <div v-if="logsFollowing && !logsError" class="helper-text" style="margin-bottom: 12px">
-            正在持续跟随最新日志输出，切换资源或停止跟随后会自动关闭当前会话。
+          <div v-else class="helper-text" style="margin-bottom: 12px">
+            打开的日志页会默认追踪最新输出，你也可以在新页签中暂停追踪并调整输出行数后再刷新。
           </div>
-          <pre v-if="logsResponse" class="json-block log-block">{{ logsResponse.text }}</pre>
         </section>
 
         <section v-if="isPodResource && !isCreating" class="log-panel">
           <div class="section-head">
             <div>
-              <h2 style="font-size: 15px">Web Terminal Beta</h2>
-              <p>这里提供持续会话型 Pod 终端，支持连接、输入、轮询输出和主动断开，适合连续排障。</p>
+              <h2 style="font-size: 15px">网页终端</h2>
+              <p>选择容器后在新的浏览器页签中打开终端，可直接进入 `/bin/sh` 或 `/bin/bash`。</p>
             </div>
             <div class="button-row">
               <button
-                class="button button-secondary"
-                :disabled="terminalConnecting || !canOpenTerminal || Boolean(terminalSession)"
-                @click="openTerminalSession"
+                class="button button-primary"
+                :disabled="!canOpenTerminal"
+                @click="openPodTerminalInNewTab('/bin/sh')"
               >
-                {{ terminalConnecting ? '连接中...' : terminalSession ? '已连接' : '打开终端' }}
+                打开 sh 终端
               </button>
               <button
                 class="button button-secondary"
-                :disabled="!terminalSession"
-                @click="resetTerminalState()"
+                :disabled="!canOpenTerminal"
+                @click="openPodTerminalInNewTab('/bin/bash')"
               >
-                断开终端
+                打开 bash 终端
               </button>
             </div>
           </div>
 
           <div class="toolbar-grid terminal-toolbar">
             <label class="field-label">
-              Shell
-              <select v-model="terminalShell" :disabled="Boolean(terminalSession) || !canOpenTerminal">
-                <option value="/bin/sh">/bin/sh</option>
-                <option value="/bin/bash">/bin/bash</option>
+              Container
+              <select v-model="selectedTerminalContainer" :disabled="!containerOptions.length || !canOpenTerminal">
+                <option value="">自动选择</option>
+                <option v-for="container in containerOptions" :key="`terminal:${container}`" :value="container">
+                  {{ container }}
+                </option>
               </select>
             </label>
 
@@ -2449,61 +2328,13 @@ watch(
               Cols
               <input v-model.number="terminalCols" type="number" min="40" max="240" :disabled="!canOpenTerminal" />
             </label>
-
-            <label class="field-label">
-              Action
-              <button class="button button-secondary" :disabled="!terminalSession" @click="resizeTerminal">
-                应用尺寸
-              </button>
-            </label>
-          </div>
-
-          <div v-if="terminalSession" class="pill-row" style="margin-bottom: 12px">
-            <span class="pill">Session: #{{ terminalSession.session.id }}</span>
-            <span class="pill">Shell: {{ terminalSession.shell }}</span>
-            <span class="pill">Cursor: {{ terminalCursor }}</span>
-            <span class="pill">状态: {{ terminalSession.session.status }}</span>
           </div>
 
           <div v-if="!canOpenTerminal && !loadingPermissions" class="helper-text" style="margin-bottom: 12px">
             当前账号没有 `pods/exec` 权限，终端功能不可用。
           </div>
-          <div v-if="terminalError" class="error-text" style="margin-bottom: 12px">{{ terminalError }}</div>
-
-          <pre class="json-block terminal-block">{{ terminalOutput || '$ terminal idle' }}</pre>
-
-          <div class="toolbar-grid terminal-toolbar">
-            <label class="field-label" style="grid-column: span 2">
-              Send Input
-              <textarea
-                v-model="terminalInput"
-                placeholder="输入命令后点发送，例如：ls -la"
-                :disabled="!terminalSession"
-              />
-            </label>
-
-            <label class="field-label">
-              Send
-              <button
-                class="button button-primary"
-                :disabled="!terminalSession || terminalSending || !terminalInput.trim()"
-                @click="submitTerminalInput"
-              >
-                {{ terminalSending ? '发送中...' : '发送命令' }}
-              </button>
-            </label>
-
-            <label class="field-label">
-              Shortcuts
-              <div class="button-row">
-                <button class="button button-secondary" :disabled="!terminalSession || terminalSending" @click="sendTerminalShortcut('enter')">
-                  Enter
-                </button>
-                <button class="button button-secondary" :disabled="!terminalSession || terminalSending" @click="sendTerminalShortcut('ctrlc')">
-                  Ctrl+C
-                </button>
-              </div>
-            </label>
+          <div v-else class="helper-text" style="margin-bottom: 12px">
+            新页签终端会直接连接到目标容器，并支持发送命令、回车、Ctrl+C 和终端尺寸调整。
           </div>
         </section>
 
@@ -2609,5 +2440,78 @@ watch(
         </section>
       </article>
     </section>
+
+    <div v-if="yamlDialogOpen && selectedDetail" class="yaml-dialog-backdrop" @click.self="closeYamlDialog">
+      <section class="yaml-dialog">
+        <div class="section-head" style="margin-bottom: 12px">
+          <div>
+            <h2>YAML 编辑器</h2>
+            <p>
+              {{
+                isCreating
+                  ? '当前是新建草稿，可以直接编辑 YAML 或 JSON 后执行 Create。'
+                  : canEditYaml
+                    ? '这里支持查看并编辑当前资源的 YAML 内容。'
+                    : '当前资源仅支持只读查看 YAML。'
+              }}
+            </p>
+          </div>
+          <div class="button-row">
+            <button
+              class="button button-secondary"
+              :disabled="applying || deleting"
+              @click="isCreating ? cancelEditing() : closeYamlDialog()"
+            >
+              {{ isCreating ? '取消草稿' : '关闭' }}
+            </button>
+          </div>
+        </div>
+
+        <div class="pill-row" style="margin-bottom: 12px">
+          <span class="pill">Kind: {{ selectedDetail.resource.kind }}</span>
+          <span class="pill">Name: {{ selectedDetail.metadata.name || '--draft--' }}</span>
+          <span class="pill" v-if="selectedDetail.metadata.namespace">名称空间: {{ selectedDetail.metadata.namespace }}</span>
+          <span class="pill">RV: {{ selectedDetail.metadata.resource_version || '--' }}</span>
+        </div>
+
+        <div v-if="applyError" class="error-text" style="margin-bottom: 12px">{{ applyError }}</div>
+        <div v-if="applyMessage" class="helper-text" style="margin-bottom: 12px">{{ applyMessage }}</div>
+
+        <textarea
+          v-model="editorText"
+          class="editor-surface"
+          spellcheck="false"
+          :readonly="!isCreating && !canEditYaml"
+        />
+
+        <div class="button-row" style="margin-top: 14px; justify-content: flex-end">
+          <button
+            class="button button-secondary"
+            :disabled="!selectedDetail || applying || (!isCreating && !canEditYaml)"
+            @click="isCreating ? submitCreate(true) : submitApply(true)"
+          >
+            {{ applying ? '处理中...' : isCreating ? 'Dry-run Create' : 'Dry-run' }}
+          </button>
+          <button
+            class="button button-primary"
+            :disabled="!selectedDetail || applying || (!isCreating && !canEditYaml)"
+            @click="isCreating ? submitCreate(false) : submitApply(false)"
+          >
+            {{ applying ? (isCreating ? '创建中...' : '提交中...') : isCreating ? 'Create' : 'Apply' }}
+          </button>
+        </div>
+      </section>
+    </div>
+
+    <ConfirmDialog
+      :visible="deleteDialogVisible"
+      title="删除资源"
+      :message="pendingDeleteName ? `确认删除资源 ${pendingDeleteName} 吗？该操作不可撤销。` : ''"
+      confirm-text="删除"
+      cancel-text="取消"
+      :danger="true"
+      @confirm="confirmDeleteResource"
+      @cancel="cancelDeleteResource"
+    />
   </div>
 </template>

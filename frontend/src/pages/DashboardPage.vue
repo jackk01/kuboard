@@ -4,6 +4,7 @@ import { RouterLink } from 'vue-router'
 
 import StatusBadge from '../components/StatusBadge.vue'
 import { ApiError, apiRequest } from '../lib/api'
+import { useClusterStore } from '../stores/clusters'
 import type { DashboardSummary } from '../types'
 
 interface ReadinessPayload {
@@ -19,17 +20,17 @@ const readinessLoading = ref(true)
 const summary = ref<DashboardSummary | null>(null)
 const readiness = ref<ReadinessPayload | null>(null)
 const errorMessage = ref('')
+const clusterStore = useClusterStore()
 
 const clusterStats = computed(() => {
-  const clusters = summary.value?.clusters
+  const clusters = clusterStore.items
   return {
-    total: clusters?.total ?? 0,
-    ready: clusters?.ready ?? 0,
-    pending: clusters?.pending ?? 0,
-    error: clusters?.error ?? 0,
-    healthy: clusters?.healthy ?? 0,
-    degraded: clusters?.degraded ?? 0,
-    unknown: clusters?.unknown ?? 0,
+    ready: clusters.filter((cluster) => cluster.status === 'ready').length,
+    pending: clusters.filter((cluster) => cluster.status === 'pending').length,
+    error: clusters.filter((cluster) => cluster.status === 'error').length,
+    healthy: clusters.filter((cluster) => cluster.health_state === 'healthy').length,
+    degraded: clusters.filter((cluster) => cluster.health_state === 'degraded').length,
+    unknown: clusters.filter((cluster) => cluster.health_state === 'unknown').length,
   }
 })
 
@@ -55,7 +56,11 @@ async function fetchDashboard() {
   try {
     const [summaryPayload, readinessPayload] = await Promise.all([
       apiRequest<DashboardSummary>('/api/v1/dashboard/summary'),
-      apiRequest<ReadinessPayload>('/api/v1/health/ready', { skipAuth: true }),
+      apiRequest<ReadinessPayload>('/api/v1/health/ready', {
+        skipAuth: true,
+        acceptErrorResponse: true,
+      }),
+      clusterStore.fetchClusters(),
     ])
     summary.value = summaryPayload
     readiness.value = readinessPayload
@@ -91,10 +96,6 @@ onMounted(async () => {
       </div>
 
       <div class="cluster-summary-grid dashboard-summary-grid">
-        <article class="cluster-summary-card">
-          <span>已纳管</span>
-          <strong>{{ clusterStats.total }}</strong>
-        </article>
         <article class="cluster-summary-card">
           <span>Ready</span>
           <strong class="is-ready">{{ clusterStats.ready }}</strong>

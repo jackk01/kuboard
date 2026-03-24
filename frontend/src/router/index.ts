@@ -10,6 +10,8 @@ import ClustersPage from '../pages/ClustersPage.vue'
 import DashboardPage from '../pages/DashboardPage.vue'
 import ExplorerPage from '../pages/ExplorerPage.vue'
 import LoginPage from '../pages/LoginPage.vue'
+import PodLogsPage from '../pages/PodLogsPage.vue'
+import PodTerminalPage from '../pages/PodTerminalPage.vue'
 import SettingsPage from '../pages/SettingsPage.vue'
 import { useSessionStore } from '../stores/session'
 
@@ -40,6 +42,18 @@ const router = createRouter({
           path: 'explorer',
           name: 'explorer',
           component: ExplorerPage,
+        },
+        {
+          path: 'pod-logs',
+          name: 'pod-logs',
+          component: PodLogsPage,
+          meta: { title: 'Pod 日志' },
+        },
+        {
+          path: 'pod-terminal',
+          name: 'pod-terminal',
+          component: PodTerminalPage,
+          meta: { title: '容器终端' },
         },
         {
           path: 'audit',
@@ -77,4 +91,3 @@ export function setupRouterGuards(targetRouter: Router) {
 }
 
 export default router
-

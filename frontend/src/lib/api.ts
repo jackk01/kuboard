@@ -1,5 +1,6 @@
 type RequestOptions = RequestInit & {
   skipAuth?: boolean
+  acceptErrorResponse?: boolean
 }
 
 class ApiError extends Error {
@@ -52,6 +53,9 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
 
   const payload = await response.json().catch(() => null)
   if (!response.ok) {
+    if (options.acceptErrorResponse) {
+      return payload as T
+    }
     throw new ApiError(
       payload?.message ?? '请求失败，请稍后再试。',
       response.status,

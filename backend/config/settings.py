@@ -1,8 +1,38 @@
 import os
+import sqlite3
+import sys
 from pathlib import Path
+from typing import Optional
+from urllib.parse import urlsplit, urlunsplit
+
+import redis
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+
+def load_env_file(path: Path) -> None:
+    if not path.exists():
+        return
+
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            continue
+
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+
+        os.environ.setdefault(key, value)
+
+
+load_env_file(BASE_DIR / ".env")
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -11,6 +41,80 @@ def env_bool(name: str, default: bool = False) -> bool:
 
 def env_list(name: str, default: str = "") -> list[str]:
     return [item.strip() for item in os.getenv(name, default).split(",") if item.strip()]
+
+
+LOG_LEVELS = {
+    "debug": 10,
+    "info": 20,
+    "warning": 30,
+    "error": 40,
+    "critical": 50,
+    "off": 100,
+}
+
+
+def normalize_log_level(value: Optional[str], default: str = "info") -> str:
+    normalized = (value or default).strip().lower()
+    return normalized if normalized in LOG_LEVELS else default
+
+
+def should_emit_log(configured_level: str, target_level: str) -> bool:
+    return LOG_LEVELS[configured_level] <= LOG_LEVELS[target_level]
+
+
+def mask_url(value: str) -> str:
+    if not value:
+        return value
+
+    parts = urlsplit(value)
+    if not parts.netloc or "@" not in parts.netloc:
+        return value
+
+    credentials, host = parts.netloc.rsplit("@", 1)
+    username, separator, _password = credentials.partition(":")
+    masked_credentials = f"{username}:***" if separator else "***"
+    return urlunsplit((parts.scheme, f"{masked_credentials}@{host}", parts.path, parts.query, parts.fragment))
+
+
+def emit_startup_log(level: str, message: str) -> None:
+    sys.stderr.write(f"[startup:{level.upper()}] {message}\n")
+    sys.stderr.flush()
+
+
+def probe_database_connection() -> str:
+    engine = DATABASES["default"]["ENGINE"]
+    name = DATABASES["default"]["NAME"]
+
+    if engine == "django.db.backends.sqlite3":
+        try:
+            connection = sqlite3.connect(
+                name,
+                timeout=float(DATABASES["default"].get("OPTIONS", {}).get("timeout", 20)),
+            )
+            try:
+                cursor = connection.cursor()
+                cursor.execute("SELECT 1")
+                row = cursor.fetchone()
+            finally:
+                connection.close()
+            return f"ok engine=sqlite3 path={name} query_result={row[0] if row else 'none'}"
+        except Exception as exc:  # pragma: no cover - startup diagnostics
+            return f"error engine=sqlite3 path={name} reason={exc}"
+
+    return f"skipped unsupported_engine={engine}"
+
+
+def probe_redis_connection() -> str:
+    location = CACHES["default"]["LOCATION"]
+    try:
+        client = redis.Redis.from_url(location, socket_connect_timeout=2, socket_timeout=2)
+        try:
+            response = client.ping()
+        finally:
+            client.close()
+        return f"ok location={mask_url(location)} ping={response}"
+    except Exception as exc:  # pragma: no cover - startup diagnostics
+        return f"error location={mask_url(location)} reason={exc}"
 
 SECRET_KEY = os.getenv(
     "DJANGO_SECRET_KEY",
@@ -152,6 +256,11 @@ X_FRAME_OPTIONS = os.getenv("DJANGO_X_FRAME_OPTIONS", "DENY")
 CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", os.getenv("REDIS_URL", "redis://127.0.0.1:6379/1"))
 CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", os.getenv("REDIS_URL", "redis://127.0.0.1:6379/1"))
 CELERY_TASK_ALWAYS_EAGER = env_bool("CELERY_TASK_ALWAYS_EAGER", False)
+DJANGO_LOG_LEVEL = os.getenv("DJANGO_LOG_LEVEL", "INFO").upper()
+KUBOARD_STARTUP_LOG_LEVEL = normalize_log_level(
+    os.getenv("KUBOARD_STARTUP_LOG_LEVEL"),
+    "info" if DEBUG else "warning",
+)
 
 LOGGING = {
     "version": 1,
@@ -170,6 +279,38 @@ LOGGING = {
     },
     "root": {
         "handlers": ["console"],
-        "level": os.getenv("DJANGO_LOG_LEVEL", "INFO"),
+        "level": DJANGO_LOG_LEVEL,
     },
 }
+
+if should_emit_log(KUBOARD_STARTUP_LOG_LEVEL, "info"):
+    emit_startup_log(
+        "info",
+        (
+            "Kuboard settings loaded: "
+            f"debug={DEBUG}, "
+            f"timezone={TIME_ZONE}, "
+            f"django_log_level={DJANGO_LOG_LEVEL}, "
+            f"database={DATABASES['default']['ENGINE']}::{DATABASES['default']['NAME']}, "
+            f"cache={CACHES['default']['BACKEND']}::{mask_url(CACHES['default']['LOCATION'])}, "
+            f"celery_broker={mask_url(CELERY_BROKER_URL)}, "
+            f"celery_result_backend={mask_url(CELERY_RESULT_BACKEND)}"
+        ),
+    )
+
+if should_emit_log(KUBOARD_STARTUP_LOG_LEVEL, "debug"):
+    emit_startup_log(
+        "debug",
+        (
+            "Additional startup config: "
+            f"allowed_hosts={ALLOWED_HOSTS}, "
+            f"cors_allowed_origins={CORS_ALLOWED_ORIGINS}, "
+            f"csrf_trusted_origins={CSRF_TRUSTED_ORIGINS}, "
+            f"static_root={STATIC_ROOT}, "
+            f"session_cookie_secure={SESSION_COOKIE_SECURE}, "
+            f"csrf_cookie_secure={CSRF_COOKIE_SECURE}, "
+            f"use_x_forwarded_host={USE_X_FORWARDED_HOST}"
+        ),
+    )
+    emit_startup_log("debug", f"database_probe={probe_database_connection()}")
+    emit_startup_log("debug", f"redis_probe={probe_redis_connection()}")

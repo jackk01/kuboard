@@ -103,21 +103,6 @@ async function runHealthCheck(clusterId: string) {
   }
 }
 
-async function runDiscovery(clusterId: string) {
-  errorMessage.value = ''
-  feedback.value = ''
-  try {
-    await clusterStore.syncDiscovery(clusterId)
-    feedback.value = 'Discovery 同步完成。'
-  } catch (error) {
-    if (error instanceof ApiError) {
-      errorMessage.value = error.message
-      return
-    }
-    errorMessage.value = 'Discovery 同步失败，请稍后重试。'
-  }
-}
-
 async function runBatchHealthCheck() {
   errorMessage.value = ''
   feedback.value = ''
@@ -136,24 +121,6 @@ async function runBatchHealthCheck() {
   feedback.value = `批量健康检查完成：共 ${targets.length} 个集群。`
 }
 
-async function runBatchDiscovery() {
-  errorMessage.value = ''
-  feedback.value = ''
-  const targets = filteredClusters.value
-  if (!targets.length) {
-    feedback.value = '当前筛选结果为空，无需执行 Discovery 同步。'
-    return
-  }
-
-  const results = await Promise.allSettled(targets.map((cluster) => clusterStore.syncDiscovery(cluster.id)))
-  const failedCount = results.filter((item) => item.status === 'rejected').length
-  if (failedCount > 0) {
-    errorMessage.value = `批量 Discovery 同步完成：${targets.length - failedCount} 成功，${failedCount} 失败。`
-    return
-  }
-  feedback.value = `批量 Discovery 同步完成：共 ${targets.length} 个集群。`
-}
-
 function handleShellCommand(event: Event) {
   const customEvent = event as CustomEvent<{ action?: string }>
   const action = customEvent.detail?.action
@@ -163,10 +130,6 @@ function handleShellCommand(event: Event) {
   }
   if (action === 'clusters.health_all') {
     void runBatchHealthCheck()
-    return
-  }
-  if (action === 'clusters.discovery_all') {
-    void runBatchDiscovery()
   }
 }
 
@@ -469,12 +432,8 @@ async function confirmDelete() {
                   </button>
                   <button
                     class="button button-secondary"
-                    :disabled="clusterStore.discoveringIds.includes(cluster.id)"
-                    @click="runDiscovery(cluster.id)"
-                  >
-                    {{ clusterStore.discoveringIds.includes(cluster.id) ? '同步中...' : '同步 Discovery' }}
-                  </button>
-                  <button class="button button-secondary" @click="startEdit(cluster)">编辑</button>
+                    @click="startEdit(cluster)"
+                  >编辑</button>
                   <button
                     class="button button-danger"
                     :disabled="clusterStore.deletingIds.includes(cluster.id)"

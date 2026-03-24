@@ -702,26 +702,49 @@ class KubernetesClient:
             return {"type": "null"}
         return {"type": "string"}
 
-    def _build_inferred_schema(self, *, group: str, version: str, resource: str, descriptor: ResourceDescriptor) -> dict[str, Any]:
+    def _build_inferred_schema(
+        self,
+        *,
+        group: str,
+        version: str,
+        resource: str,
+        descriptor: ResourceDescriptor,
+        namespace: str | None = None,
+    ) -> dict[str, Any]:
         try:
-            sample = self.list_resources(group=group, version=version, resource=resource, limit=1)
+            sample = self.list_resources(group=group, version=version, resource=resource, namespace=namespace, limit=1)
         except KubernetesAPIError:
             sample = None
 
-        object_schema = self._infer_schema_from_value((sample or {}).get("items", [{}])[0] if sample else {})
+        sample_items = (sample or {}).get("items", []) if sample else []
+        sample_object = sample_items[0] if sample_items else {}
+        sample_namespace = (
+            (sample or {}).get("resource", {}).get("namespace")
+            if sample and descriptor.namespaced
+            else namespace
+        )
+        object_schema = self._infer_schema_from_value(sample_object)
         return {
             "source": "inferred",
             "schema_name": descriptor.kind or resource,
             "schema": object_schema,
             "sample_count": (sample or {}).get("metadata", {}).get("count", 0),
+            "sample_namespace": sample_namespace,
+            "empty_sample": not bool(sample_items),
         }
 
-    def get_resource_schema(self, *, group: str, version: str, resource: str) -> dict[str, Any]:
+    def get_resource_schema(self, *, group: str, version: str, resource: str, namespace: str | None = None) -> dict[str, Any]:
         descriptor = self.get_resource_descriptor(group, version, resource)
         resolved = (
             self._find_crd_schema(group=group, version=version, resource=resource)
             or self._find_openapi_schema(group=group, version=version, kind=descriptor.kind)
-            or self._build_inferred_schema(group=group, version=version, resource=resource, descriptor=descriptor)
+            or self._build_inferred_schema(
+                group=group,
+                version=version,
+                resource=resource,
+                descriptor=descriptor,
+                namespace=namespace,
+            )
         )
 
         return {
