@@ -188,14 +188,44 @@ class ClusterManagementAPITests(TestCase):
             status=ClusterStatus.READY,
             imported_by=self.user,
         )
-        ClusterCredential.objects.create(
+        credential = ClusterCredential.objects.create(
             cluster=self.cluster,
             active_context="prod",
             kubeconfig_encrypted="encrypted",
             fingerprint="fingerprint",
         )
+        credential.set_kubeconfig(
+            """\
+apiVersion: v1
+kind: Config
+clusters:
+  - name: prod
+    cluster:
+      server: https://127.0.0.1:6443
+users:
+  - name: prod
+    user:
+      token: old-token
+contexts:
+  - name: prod
+    context:
+      cluster: prod
+      user: prod
+current-context: prod
+"""
+        )
+        credential.save()
         ClusterCapability.objects.create(cluster=self.cluster)
         ClusterHealthStatus.objects.create(cluster=self.cluster, status="healthy", message="ok", latency_ms=5)
+
+    def test_get_cluster_detail_includes_kubeconfig(self):
+        response = self.client.get(f"/api/v1/clusters/{self.cluster.id}")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn("kubeconfig", payload)
+        self.assertEqual(payload["active_context"], "prod")
+        self.assertIn("current-context: prod", payload["kubeconfig"])
 
     def test_update_cluster_metadata(self):
         response = self.client.patch(
@@ -213,6 +243,53 @@ class ClusterManagementAPITests(TestCase):
         self.assertEqual(payload["name"], "prod-cluster-updated")
         self.assertEqual(payload["environment"], "uat")
         self.assertEqual(payload["description"], "updated description")
+
+    @patch("apps.k8s_gateway.services.KubernetesClient.discover")
+    @patch("apps.k8s_gateway.services.KubernetesClient.probe")
+    def test_update_cluster_kubeconfig(self, probe_mock, discover_mock):
+        probe_mock.return_value = {"version": {"gitVersion": "v1.30.1"}, "latency_ms": 8}
+        discover_mock.return_value = {
+            "groups": [{"group": "core", "version": "v1", "preferred_version": "v1", "resources": []}],
+            "resource_index": {},
+            "supports_exec": False,
+        }
+
+        response = self.client.patch(
+            f"/api/v1/clusters/{self.cluster.id}",
+            {
+                "name": "prod-cluster",
+                "environment": "prod",
+                "description": "rotated token",
+                "kubeconfig": """\
+apiVersion: v1
+kind: Config
+clusters:
+  - name: prod-new
+    cluster:
+      server: https://10.0.0.10:6443
+users:
+  - name: prod-new
+    user:
+      token: new-token
+contexts:
+  - name: prod-new
+    context:
+      cluster: prod-new
+      user: prod-new
+current-context: prod-new
+""",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.cluster.refresh_from_db()
+        self.cluster.credential.refresh_from_db()
+        payload = response.json()
+        self.assertEqual(payload["server"], "https://10.0.0.10:6443")
+        self.assertEqual(payload["default_context"], "prod-new")
+        self.assertEqual(self.cluster.credential.active_context, "prod-new")
+        self.assertIn("new-token", self.cluster.credential.get_kubeconfig())
 
     def test_delete_cluster(self):
         response = self.client.delete(f"/api/v1/clusters/{self.cluster.id}")

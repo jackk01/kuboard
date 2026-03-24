@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 
 import { apiRequest } from '../lib/api'
-import type { Cluster, LocalKubeconfigPayload } from '../types'
+import type { Cluster, ClusterDetail, LocalKubeconfigPayload } from '../types'
 
 interface ClusterPayload {
   name: string
@@ -49,6 +49,10 @@ export const useClusterStore = defineStore('clusters', {
       return apiRequest<LocalKubeconfigPayload>('/api/v1/clusters/local-kubeconfig')
     },
 
+    async fetchCluster(clusterId: string) {
+      return apiRequest<ClusterDetail>(`/api/v1/clusters/${clusterId}`)
+    },
+
     async healthCheck(clusterId: string) {
       this.checkingIds = [...this.checkingIds, clusterId]
       try {
@@ -78,6 +82,7 @@ export const useClusterStore = defineStore('clusters', {
         name: string
         environment: string
         description: string
+        kubeconfig?: string
       },
     ) {
       this.updatingIds = [...this.updatingIds, clusterId]

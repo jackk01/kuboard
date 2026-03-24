@@ -3,7 +3,7 @@ import sqlite3
 import sys
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 
 import redis
 
@@ -74,6 +74,21 @@ def mask_url(value: str) -> str:
     username, separator, _password = credentials.partition(":")
     masked_credentials = f"{username}:***" if separator else "***"
     return urlunsplit((parts.scheme, f"{masked_credentials}@{host}", parts.path, parts.query, parts.fragment))
+
+
+def with_redis_password(url: str, password: Optional[str]) -> str:
+    if not url or not password:
+        return url
+
+    parts = urlsplit(url)
+    if not parts.netloc or parts.password is not None:
+        return url
+
+    host = parts.netloc.rsplit("@", 1)[-1]
+    username = parts.username or ""
+    encoded_password = quote(password, safe="")
+    credentials = f"{username}:{encoded_password}" if username else f":{encoded_password}"
+    return urlunsplit((parts.scheme, f"{credentials}@{host}", parts.path, parts.query, parts.fragment))
 
 
 def emit_startup_log(level: str, message: str) -> None:
@@ -186,10 +201,24 @@ DATABASES = {
     }
 }
 
+REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
+REDIS_URL = with_redis_password(
+    os.getenv("REDIS_URL", "redis://127.0.0.1:6379/1"),
+    REDIS_PASSWORD,
+)
+CELERY_BROKER_URL = with_redis_password(
+    os.getenv("CELERY_BROKER_URL", REDIS_URL),
+    REDIS_PASSWORD,
+)
+CELERY_RESULT_BACKEND = with_redis_password(
+    os.getenv("CELERY_RESULT_BACKEND", REDIS_URL),
+    REDIS_PASSWORD,
+)
+
 CACHES = {
     "default": {
         "BACKEND": "django.core.cache.backends.redis.RedisCache",
-        "LOCATION": os.getenv("REDIS_URL", "redis://127.0.0.1:6379/1"),
+        "LOCATION": REDIS_URL,
         "TIMEOUT": 300,
     }
 }
@@ -253,8 +282,6 @@ SECURE_CONTENT_TYPE_NOSNIFF = True
 SECURE_REFERRER_POLICY = os.getenv("DJANGO_SECURE_REFERRER_POLICY", "same-origin")
 X_FRAME_OPTIONS = os.getenv("DJANGO_X_FRAME_OPTIONS", "DENY")
 
-CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", os.getenv("REDIS_URL", "redis://127.0.0.1:6379/1"))
-CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", os.getenv("REDIS_URL", "redis://127.0.0.1:6379/1"))
 CELERY_TASK_ALWAYS_EAGER = env_bool("CELERY_TASK_ALWAYS_EAGER", False)
 DJANGO_LOG_LEVEL = os.getenv("DJANGO_LOG_LEVEL", "INFO").upper()
 KUBOARD_STARTUP_LOG_LEVEL = normalize_log_level(

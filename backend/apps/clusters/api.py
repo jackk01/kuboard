@@ -6,7 +6,7 @@ from common.audit import record_audit_event
 from apps.k8s_gateway.services import KubernetesAPIError, KubernetesClient
 
 from .models import Cluster
-from .serializers import ClusterImportSerializer, ClusterSerializer, ClusterUpdateSerializer
+from .serializers import ClusterDetailSerializer, ClusterImportSerializer, ClusterSerializer, ClusterUpdateSerializer
 from .services import load_local_kubeconfig
 
 
@@ -66,19 +66,32 @@ class LocalKubeconfigView(APIView):
 
 
 class ClusterDetailView(generics.RetrieveUpdateDestroyAPIView):
-    queryset = Cluster.objects.select_related("health", "capability").all()
+    queryset = Cluster.objects.select_related("credential", "health", "capability").all()
 
     def get_serializer_class(self):
         if self.request.method in {"PUT", "PATCH"}:
             return ClusterUpdateSerializer
-        return ClusterSerializer
+        return ClusterDetailSerializer
 
     def update(self, request, *args, **kwargs):
         partial = kwargs.pop("partial", False)
         cluster = self.get_object()
-        serializer = self.get_serializer(cluster, data=request.data, partial=partial)
+        serializer = self.get_serializer(cluster, data=request.data, partial=partial, context={"request": request})
         serializer.is_valid(raise_exception=True)
         serializer.save()
+
+        if "kubeconfig" in serializer.validated_data:
+            client = KubernetesClient(cluster)
+            try:
+                client.sync_health()
+            except KubernetesAPIError:
+                pass
+            else:
+                try:
+                    _sync_discovery_after_health_check(client, cluster)
+                except KubernetesAPIError as exc:
+                    cluster.health.message = f"{cluster.health.message} Discovery 同步失败：{exc}"
+                    cluster.health.save(update_fields=["message", "last_checked_at"])
 
         record_audit_event(
             event_type="cluster.update",
@@ -90,6 +103,7 @@ class ClusterDetailView(generics.RetrieveUpdateDestroyAPIView):
             metadata={
                 "fields": sorted(serializer.validated_data.keys()),
                 "environment": cluster.environment,
+                "kubeconfig_updated": "kubeconfig" in serializer.validated_data,
             },
         )
         return Response(ClusterSerializer(cluster).data)

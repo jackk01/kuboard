@@ -59,6 +59,12 @@ export interface Cluster {
   capability: ClusterCapability
 }
 
+export interface ClusterDetail extends Cluster {
+  kubeconfig: string
+  fingerprint: string
+  active_context: string
+}
+
 export interface LocalKubeconfigPayload {
   source_path: string
   kubeconfig: string

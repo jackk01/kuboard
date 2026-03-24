@@ -55,17 +55,57 @@ class ClusterSerializer(serializers.ModelSerializer):
         ]
 
 
+class ClusterDetailSerializer(ClusterSerializer):
+    kubeconfig = serializers.SerializerMethodField()
+    fingerprint = serializers.CharField(source="credential.fingerprint", read_only=True)
+    active_context = serializers.CharField(source="credential.active_context", read_only=True)
+
+    class Meta(ClusterSerializer.Meta):
+        fields = ClusterSerializer.Meta.fields + ["kubeconfig", "fingerprint", "active_context"]
+
+    def get_kubeconfig(self, obj: Cluster) -> str:
+        return obj.credential.get_kubeconfig()
+
+
 class ClusterUpdateSerializer(serializers.ModelSerializer):
     environment = serializers.ChoiceField(choices=ENVIRONMENT_CHOICES)
+    kubeconfig = serializers.CharField(required=False)
 
     class Meta:
         model = Cluster
-        fields = ["name", "environment", "description"]
+        fields = ["name", "environment", "description", "kubeconfig"]
+
+    def validate(self, attrs):
+        kubeconfig = attrs.get("kubeconfig")
+        if kubeconfig is not None:
+            self.context["inspection"] = validate_kubeconfig(kubeconfig)
+        return attrs
 
     def validate_name(self, value):
         if not slugify(value):
             raise serializers.ValidationError("集群名称需要包含可生成 slug 的字符。")
         return value
+
+    @transaction.atomic
+    def update(self, instance: Cluster, validated_data):
+        inspection = self.context.get("inspection")
+        kubeconfig = validated_data.pop("kubeconfig", None)
+
+        for field in ["name", "environment", "description"]:
+            if field in validated_data:
+                setattr(instance, field, validated_data[field])
+
+        if inspection and kubeconfig is not None:
+            instance.server = inspection.server
+            instance.default_context = inspection.current_context
+
+            credential = instance.credential
+            credential.active_context = inspection.current_context
+            credential.set_kubeconfig(inspection.normalized)
+            credential.save(update_fields=["active_context", "kubeconfig_encrypted", "fingerprint", "updated_at"])
+
+        instance.save()
+        return instance
 
 
 class ClusterImportSerializer(serializers.Serializer):

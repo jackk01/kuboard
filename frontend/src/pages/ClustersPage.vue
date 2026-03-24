@@ -10,6 +10,7 @@ const clusterStore = useClusterStore()
 const feedback = ref('')
 const errorMessage = ref('')
 const editClusterId = ref<string | null>(null)
+const editLoading = ref(false)
 const importPanelOpen = ref(true)
 const importMode = ref<'paste' | 'upload'>('paste')
 const uploadFileName = ref('')
@@ -36,6 +37,7 @@ const editForm = reactive({
   name: '',
   environment: 'dev',
   description: '',
+  kubeconfig: '',
 })
 
 const statusSummary = computed(() => {
@@ -238,7 +240,7 @@ function clearUploadedFile() {
   if (input) input.value = ''
 }
 
-function startEdit(cluster: {
+async function startEdit(cluster: {
   id: string
   name: string
   environment: string
@@ -248,12 +250,32 @@ function startEdit(cluster: {
   editForm.name = cluster.name
   editForm.environment = cluster.environment
   editForm.description = cluster.description ?? ''
+  editForm.kubeconfig = ''
   feedback.value = ''
   errorMessage.value = ''
+
+  editLoading.value = true
+  try {
+    const detail = await clusterStore.fetchCluster(cluster.id)
+    editForm.name = detail.name
+    editForm.environment = detail.environment
+    editForm.description = detail.description ?? ''
+    editForm.kubeconfig = detail.kubeconfig
+  } catch (error) {
+    editClusterId.value = null
+    if (error instanceof ApiError) {
+      errorMessage.value = error.message
+      return
+    }
+    errorMessage.value = '读取集群详情失败，请稍后重试。'
+  } finally {
+    editLoading.value = false
+  }
 }
 
 function cancelEdit() {
   editClusterId.value = null
+  editLoading.value = false
 }
 
 async function saveEdit(clusterId: string) {
@@ -264,6 +286,7 @@ async function saveEdit(clusterId: string) {
       name: editForm.name,
       environment: editForm.environment,
       description: editForm.description,
+      kubeconfig: editForm.kubeconfig,
     })
     feedback.value = `集群 ${updated.name} 的信息已更新。`
     editClusterId.value = null
@@ -453,9 +476,12 @@ async function confirmDelete() {
         <div class="section-head" style="margin-bottom: 12px">
           <div>
             <h2>编辑集群</h2>
+            <p>支持同时更新名称、环境、描述以及已导入的 kubeconfig 内容。</p>
           </div>
           <button class="button button-secondary" @click="cancelEdit">关闭</button>
         </div>
+        <div v-if="editLoading" class="empty-state">正在加载集群详情...</div>
+        <template v-else>
         <div class="triple-grid">
           <label class="field-label">
             集群名称
@@ -475,9 +501,21 @@ async function confirmDelete() {
             <input v-model="editForm.description" />
           </label>
         </div>
-        <div class="button-row" style="margin-top: 12px">
-          <button class="button button-primary" @click="saveEdit(editClusterId)">保存修改</button>
+        <label class="field-label" style="margin-top: 12px">
+          kubeconfig 内容
+          <textarea
+            v-model="editForm.kubeconfig"
+            placeholder="在此编辑当前集群的 kubeconfig YAML 内容..."
+            class="kubeconfig-textarea"
+          />
+        </label>
+        <div class="helper-text" style="margin-top: 8px">
+          保存后会用新的 kubeconfig 重新更新集群 server、默认 context，并触发一次健康检查。
         </div>
+        <div class="button-row" style="margin-top: 12px">
+          <button class="button button-primary" :disabled="!editForm.kubeconfig.trim()" @click="saveEdit(editClusterId)">保存修改</button>
+        </div>
+        </template>
       </div>
 
       <div v-if="importPanelOpen" class="cluster-import-panel">

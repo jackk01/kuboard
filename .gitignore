@@ -13,3 +13,4 @@ dist/
 db.*
 .env
 kuboard-ui
+.github
