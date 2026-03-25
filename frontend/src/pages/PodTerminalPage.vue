@@ -1,5 +1,8 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { FitAddon } from '@xterm/addon-fit'
+import { Terminal } from '@xterm/xterm'
+import '@xterm/xterm/css/xterm.css'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { ApiError, apiRequest } from '../lib/api'
@@ -11,18 +14,15 @@ const router = useRouter()
 const clusterStore = useClusterStore()
 
 const terminalSession = ref<TerminalSessionResponse | null>(null)
-const terminalOutput = ref('')
 const terminalError = ref('')
 const terminalConnecting = ref(false)
 const terminalSending = ref(false)
 const terminalCursor = ref(0)
 const terminalShell = ref<'/bin/sh' | '/bin/bash'>('/bin/sh')
-const terminalInput = ref('')
 const terminalRows = ref(32)
 const terminalCols = ref(120)
-
-let terminalLoopToken = 0
-let terminalPollTimer: number | null = null
+const terminalViewport = ref<HTMLElement | null>(null)
+const terminalHost = ref<HTMLElement | null>(null)
 
 const clusterId = computed(() => String(route.query.cluster || ''))
 const podName = computed(() => String(route.query.pod || ''))
@@ -30,12 +30,136 @@ const namespace = computed(() => String(route.query.namespace || 'default'))
 const containerName = computed(() => String(route.query.container || ''))
 const selectedCluster = computed(() => clusterStore.items.find((cluster) => cluster.id === clusterId.value) ?? null)
 const pageReady = computed(() => Boolean(clusterId.value && podName.value))
+const terminalStatusText = computed(() => {
+  if (terminalConnecting.value) {
+    return '连接中'
+  }
+  if (terminalError.value) {
+    return '连接异常'
+  }
+  if (terminalSession.value) {
+    return terminalSession.value.session.status === 'running' ? '已连接' : '已断开'
+  }
+  return '未连接'
+})
+
+let terminalLoopToken = 0
+let terminalPollTimer: number | null = null
+let writeQueue = ''
+let flushingInput = false
+let resizeTimer: number | null = null
+let terminal: Terminal | null = null
+let fitAddon: FitAddon | null = null
+let resizeObserver: ResizeObserver | null = null
 
 function clearTerminalPollTimer() {
   if (terminalPollTimer !== null) {
     window.clearTimeout(terminalPollTimer)
     terminalPollTimer = null
   }
+}
+
+function clearResizeTimer() {
+  if (resizeTimer !== null) {
+    window.clearTimeout(resizeTimer)
+    resizeTimer = null
+  }
+}
+
+function focusTerminal() {
+  terminal?.focus()
+}
+
+function createTerminal() {
+  if (!terminalHost.value) {
+    return
+  }
+
+  terminal = new Terminal({
+    cursorBlink: true,
+    fontFamily: '"SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace',
+    fontSize: 15,
+    lineHeight: 1.2,
+    convertEol: true,
+    scrollback: 3000,
+    theme: {
+      background: '#1e1d47',
+      foreground: '#fff1e2',
+      cursor: '#8aff80',
+      cursorAccent: '#1e1d47',
+      selectionBackground: 'rgba(140, 182, 255, 0.28)',
+      black: '#171531',
+      red: '#ff8e8e',
+      green: '#85ff76',
+      yellow: '#ffd37b',
+      blue: '#7eb6ff',
+      magenta: '#f2a7ff',
+      cyan: '#8ef2ff',
+      white: '#f7f3e9',
+      brightBlack: '#58527a',
+      brightRed: '#ffb1b1',
+      brightGreen: '#b4ffad',
+      brightYellow: '#ffe6a8',
+      brightBlue: '#aacfff',
+      brightMagenta: '#ffc5ff',
+      brightCyan: '#b6f8ff',
+      brightWhite: '#ffffff',
+    },
+  })
+
+  fitAddon = new FitAddon()
+  terminal.loadAddon(fitAddon)
+  terminal.open(terminalHost.value)
+  terminal.onData((data) => {
+    queueTerminalInput(data)
+  })
+  terminal.onResize(({ rows, cols }) => {
+    terminalRows.value = rows
+    terminalCols.value = cols
+    if (terminalSession.value) {
+      void resizeTerminal()
+    }
+  })
+  terminal.focus()
+}
+
+function disposeTerminal() {
+  resizeObserver?.disconnect()
+  resizeObserver = null
+  terminal?.dispose()
+  terminal = null
+  fitAddon = null
+}
+
+function writeTerminal(text: string) {
+  if (!terminal || !text) {
+    return
+  }
+  terminal.write(text)
+}
+
+function clearTerminalScreen() {
+  terminal?.clear()
+  terminal?.reset()
+}
+
+function fitTerminal() {
+  if (!terminal || !fitAddon) {
+    return
+  }
+  fitAddon.fit()
+  terminalRows.value = terminal.rows
+  terminalCols.value = terminal.cols
+}
+
+function scheduleResize() {
+  clearResizeTimer()
+  resizeTimer = window.setTimeout(() => {
+    fitTerminal()
+    if (terminalSession.value) {
+      void resizeTerminal()
+    }
+  }, 120)
 }
 
 async function closeStreamSession(sessionId: number, statusValue = 'stopped') {
@@ -54,12 +178,13 @@ function resetTerminalState(options: { closeRemote?: boolean } = {}) {
   terminalLoopToken += 1
   clearTerminalPollTimer()
   terminalSession.value = null
-  terminalOutput.value = ''
   terminalError.value = ''
   terminalConnecting.value = false
   terminalSending.value = false
   terminalCursor.value = 0
-  terminalInput.value = ''
+  writeQueue = ''
+  flushingInput = false
+  clearTerminalScreen()
   if (options.closeRemote !== false && sessionId) {
     void closeStreamSession(sessionId)
   }
@@ -78,7 +203,7 @@ async function pollTerminalOutput(loopToken: number) {
       return
     }
     if (payload.text) {
-      terminalOutput.value = `${terminalOutput.value}${payload.text}`.slice(-60000)
+      writeTerminal(payload.text)
     }
     terminalCursor.value = payload.cursor
     if (payload.closed) {
@@ -89,6 +214,9 @@ async function pollTerminalOutput(loopToken: number) {
           status: payload.status,
           closed_at: payload.closed_at,
         },
+      }
+      if (payload.exit_code !== null) {
+        writeTerminal(`\r\n[session closed: exit ${payload.exit_code}]\r\n`)
       }
       return
     }
@@ -107,7 +235,7 @@ async function pollTerminalOutput(loopToken: number) {
   if (terminalSession.value && loopToken === terminalLoopToken) {
     terminalPollTimer = window.setTimeout(() => {
       void pollTerminalOutput(loopToken)
-    }, 900)
+    }, 300)
   }
 }
 
@@ -117,6 +245,8 @@ async function openTerminalSession() {
   }
 
   resetTerminalState()
+  clearTerminalScreen()
+  fitTerminal()
   terminalConnecting.value = true
   terminalError.value = ''
 
@@ -134,56 +264,75 @@ async function openTerminalSession() {
         }),
       },
     )
-    terminalOutput.value = terminalSession.value.text || ''
+    terminalRows.value = terminalSession.value.terminal.rows
+    terminalCols.value = terminalSession.value.terminal.cols
     terminalCursor.value = terminalSession.value.cursor || 0
+    if (terminalSession.value.text) {
+      writeTerminal(terminalSession.value.text)
+    }
     terminalLoopToken += 1
+    void nextTick(() => {
+      fitTerminal()
+      focusTerminal()
+    })
     void pollTerminalOutput(terminalLoopToken)
   } catch (error) {
     terminalSession.value = null
     if (error instanceof ApiError) {
       terminalError.value = error.message
+      writeTerminal(`\r\n[error] ${error.message}\r\n`)
     } else {
       terminalError.value = '终端建立失败。'
+      writeTerminal('\r\n[error] 终端建立失败。\r\n')
     }
   } finally {
     terminalConnecting.value = false
   }
 }
 
-async function sendTerminalInput(data: string) {
+async function flushTerminalInputQueue() {
+  if (!terminalSession.value || !writeQueue || flushingInput) {
+    return
+  }
+
+  flushingInput = true
+  while (terminalSession.value && writeQueue) {
+    const payload = writeQueue
+    writeQueue = ''
+    terminalSending.value = true
+    terminalError.value = ''
+    try {
+      await apiRequest(`/api/v1/streams/sessions/${terminalSession.value.session.id}/input`, {
+        method: 'POST',
+        body: JSON.stringify({ input: payload }),
+      })
+    } catch (error) {
+      if (error instanceof ApiError) {
+        terminalError.value = error.message
+        writeTerminal(`\r\n[input error] ${error.message}\r\n`)
+      } else {
+        terminalError.value = '终端输入发送失败。'
+        writeTerminal('\r\n[input error] 终端输入发送失败。\r\n')
+      }
+      writeQueue = ''
+      break
+    } finally {
+      terminalSending.value = false
+    }
+  }
+  flushingInput = false
+}
+
+function queueTerminalInput(data: string) {
   if (!terminalSession.value || !data) {
     return
   }
-
-  terminalSending.value = true
-  terminalError.value = ''
-  try {
-    await apiRequest(`/api/v1/streams/sessions/${terminalSession.value.session.id}/input`, {
-      method: 'POST',
-      body: JSON.stringify({ input: data }),
-    })
-  } catch (error) {
-    if (error instanceof ApiError) {
-      terminalError.value = error.message
-    } else {
-      terminalError.value = '终端输入发送失败。'
-    }
-  } finally {
-    terminalSending.value = false
-  }
+  writeQueue += data
+  void flushTerminalInputQueue()
 }
 
-async function submitTerminalInput() {
-  const value = terminalInput.value
-  if (!value.trim()) {
-    return
-  }
-  terminalInput.value = ''
-  await sendTerminalInput(`${value}\n`)
-}
-
-async function sendTerminalShortcut(shortcut: 'enter' | 'ctrlc') {
-  await sendTerminalInput(shortcut === 'enter' ? '\n' : '\u0003')
+async function sendTerminalShortcut(shortcut: 'ctrlc') {
+  queueTerminalInput(shortcut === 'ctrlc' ? '\u0003' : '')
 }
 
 async function resizeTerminal() {
@@ -224,120 +373,65 @@ async function switchShell(shell: '/bin/sh' | '/bin/bash') {
   await openTerminalSession()
 }
 
-watch([terminalRows, terminalCols], async () => {
-  if (terminalSession.value) {
-    await resizeTerminal()
-  }
-})
-
 onMounted(async () => {
   const shell = String(route.query.shell || '/bin/sh')
   terminalShell.value = shell === '/bin/bash' ? '/bin/bash' : '/bin/sh'
-  const rows = Number.parseInt(String(route.query.rows || '32'), 10)
-  const cols = Number.parseInt(String(route.query.cols || '120'), 10)
-  terminalRows.value = Number.isFinite(rows) ? rows : 32
-  terminalCols.value = Number.isFinite(cols) ? cols : 120
 
   if (!clusterStore.items.length) {
     await clusterStore.fetchClusters()
   }
 
+  await nextTick()
+  createTerminal()
+  fitTerminal()
+  resizeObserver = new ResizeObserver(() => {
+    scheduleResize()
+  })
+  if (terminalViewport.value) {
+    resizeObserver.observe(terminalViewport.value)
+  }
+  window.addEventListener('resize', scheduleResize)
   await openTerminalSession()
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('resize', scheduleResize)
+  clearResizeTimer()
   resetTerminalState()
+  disposeTerminal()
 })
 </script>
 
 <template>
-  <div class="page-grid">
-    <section class="hero-panel">
-      <div class="section-head">
-        <div>
-          <div class="eyebrow" style="color: var(--kb-primary-deep)">Terminal</div>
-          <h2 class="page-title">容器终端</h2>
-          <p class="page-description">独立页终端模式，支持直接进入容器并切换 `/bin/sh` 或 `/bin/bash`。</p>
-        </div>
-        <div class="button-row">
-          <button class="button button-primary" :disabled="terminalConnecting" @click="switchShell('/bin/sh')">进入 /bin/sh</button>
-          <button class="button button-secondary" :disabled="terminalConnecting" @click="switchShell('/bin/bash')">进入 /bin/bash</button>
-          <button class="button button-secondary" :disabled="!terminalSession" @click="resetTerminalState()">断开终端</button>
+  <div class="terminal-page">
+    <header class="terminal-topbar">
+      <div class="terminal-title-block">
+        <div class="terminal-title">{{ namespace || 'default' }} / {{ podName || '--' }} {{ containerName || 'auto' }} 控制台</div>
+        <div class="terminal-subtitle">
+          集群 {{ selectedCluster?.name || clusterId || '--' }} · Shell {{ terminalShell }} · {{ terminalRows }} x {{ terminalCols }}
         </div>
       </div>
-
-      <div class="pill-row" style="margin-bottom: 12px">
-        <span class="pill">集群: {{ selectedCluster?.name || clusterId || '--' }}</span>
-        <span class="pill">Pod: {{ podName || '--' }}</span>
-        <span class="pill">名称空间: {{ namespace || '--' }}</span>
-        <span class="pill">Container: {{ containerName || 'auto' }}</span>
+      <div class="terminal-actions">
+        <button class="button button-secondary" :disabled="terminalConnecting" @click="switchShell('/bin/sh')">切换到 sh</button>
+        <button class="button button-secondary" :disabled="terminalConnecting" @click="switchShell('/bin/bash')">切换到 bash</button>
+        <button class="button button-secondary" :disabled="!terminalSession" @click="resetTerminalState()">断开</button>
       </div>
+      <div class="terminal-status" :class="{ 'terminal-status-error': !!terminalError }">{{ terminalStatusText }}</div>
+    </header>
 
-      <div class="toolbar-grid terminal-toolbar">
-        <label class="field-label">
-          Shell
-          <input :value="terminalShell" type="text" readonly />
-        </label>
-        <label class="field-label">
-          Rows
-          <input v-model.number="terminalRows" type="number" min="12" max="120" />
-        </label>
-        <label class="field-label">
-          Cols
-          <input v-model.number="terminalCols" type="number" min="40" max="240" />
-        </label>
-        <label class="field-label">
-          Action
-          <button class="button button-secondary" :disabled="!terminalSession" @click="resizeTerminal">应用尺寸</button>
-        </label>
-      </div>
+    <main ref="terminalViewport" class="terminal-viewport" @click="focusTerminal">
+      <div v-if="!pageReady" class="terminal-overlay">缺少终端连接参数，无法建立终端会话。</div>
+      <div v-else-if="terminalError" class="terminal-overlay terminal-overlay-error">{{ terminalError }}</div>
+      <div v-else-if="terminalConnecting && !terminalSession" class="terminal-overlay">正在连接容器终端...</div>
+      <div ref="terminalHost" class="terminal-host" />
+    </main>
 
-      <div v-if="terminalSession" class="pill-row" style="margin-top: 12px">
-        <span class="pill">Session: #{{ terminalSession.session.id }}</span>
-        <span class="pill">Cursor: {{ terminalCursor }}</span>
-        <span class="pill">状态: {{ terminalSession.session.status }}</span>
-      </div>
-    </section>
-
-    <section class="surface-card log-panel">
-      <div v-if="!pageReady" class="empty-state">缺少终端连接参数，无法建立终端会话。</div>
-      <div v-else-if="terminalError" class="error-text">{{ terminalError }}</div>
-      <div v-else-if="terminalConnecting && !terminalSession" class="empty-state">正在连接终端...</div>
-      <pre class="json-block terminal-block">{{ terminalOutput || '$ terminal idle' }}</pre>
-
-      <div class="toolbar-grid terminal-toolbar" style="margin-top: 14px">
-        <label class="field-label" style="grid-column: span 2">
-          Send Input
-          <textarea
-            v-model="terminalInput"
-            placeholder="输入命令后点发送，例如：ls -la"
-            :disabled="!terminalSession"
-          />
-        </label>
-
-        <label class="field-label">
-          Send
-          <button
-            class="button button-primary"
-            :disabled="!terminalSession || terminalSending || !terminalInput.trim()"
-            @click="submitTerminalInput"
-          >
-            {{ terminalSending ? '发送中...' : '发送命令' }}
-          </button>
-        </label>
-
-        <label class="field-label">
-          Shortcuts
-          <div class="button-row">
-            <button class="button button-secondary" :disabled="!terminalSession || terminalSending" @click="sendTerminalShortcut('enter')">
-              Enter
-            </button>
-            <button class="button button-secondary" :disabled="!terminalSession || terminalSending" @click="sendTerminalShortcut('ctrlc')">
-              Ctrl+C
-            </button>
-          </div>
-        </label>
-      </div>
-    </section>
+    <footer class="terminal-footer">
+      <span>标准 Web Terminal 已启用</span>
+      <span>支持 ANSI、光标、键盘输入、粘贴和自适应尺寸</span>
+      <button class="button button-secondary" :disabled="!terminalSession || terminalSending" @click="sendTerminalShortcut('ctrlc')">
+        发送 Ctrl+C
+      </button>
+    </footer>
   </div>
 </template>

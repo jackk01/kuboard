@@ -1,18 +1,17 @@
 from __future__ import annotations
 
-import errno
-import fcntl
+import base64
+import json
 import os
-import pty
-import shutil
-import struct
-import subprocess
+import select
+import ssl
 import tempfile
-import termios
 import threading
 from dataclasses import dataclass, field
 
+import yaml
 from django.utils import timezone
+from websocket import ABNF, WebSocket, WebSocketConnectionClosedException
 
 from .models import StreamSession
 
@@ -21,6 +20,238 @@ class TerminalSessionError(Exception):
     def __init__(self, message: str, *, status_code: int = 400):
         super().__init__(message)
         self.status_code = status_code
+
+
+ALLOWED_TERMINAL_SHELLS = {
+    "sh": "/bin/sh",
+    "/bin/sh": "/bin/sh",
+    "bash": "/bin/bash",
+    "/bin/bash": "/bin/bash",
+}
+
+
+def normalize_terminal_shell(shell: str) -> str:
+    normalized = ALLOWED_TERMINAL_SHELLS.get((shell or "/bin/sh").strip())
+    if not normalized:
+        raise TerminalSessionError("当前终端仅允许 /bin/sh 或 /bin/bash。", status_code=400)
+    return normalized
+
+
+class KubernetesExecWebSocket:
+    STDIN_CHANNEL = 0
+    STDOUT_CHANNEL = 1
+    STDERR_CHANNEL = 2
+    ERROR_CHANNEL = 3
+    RESIZE_CHANNEL = 4
+
+    def __init__(
+        self,
+        *,
+        url: str,
+        headers: list[str],
+        verify_ssl: bool = True,
+        ca_cert_data: str | None = None,
+        client_cert_data: str | None = None,
+        client_key_data: str | None = None,
+        tls_server_name: str | None = None,
+    ):
+        self.url = url
+        self.headers = headers
+        self.verify_ssl = verify_ssl
+        self.ca_cert_data = ca_cert_data
+        self.client_cert_data = client_cert_data
+        self.client_key_data = client_key_data
+        self.tls_server_name = tls_server_name
+        self.sock: WebSocket | None = None
+        self._connected = False
+        self._returncode: int | None = None
+        self._status_message = ""
+        self._temp_files: list[str] = []
+        self._send_lock = threading.Lock()
+        self._close_lock = threading.Lock()
+
+    def _write_temp_file(self, encoded: str, suffix: str) -> str:
+        fd, path = tempfile.mkstemp(prefix="kuboard-terminal-", suffix=suffix)
+        try:
+            with os.fdopen(fd, "wb") as file_obj:
+                file_obj.write(base64.b64decode(encoded))
+        except Exception:
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+            raise
+        self._temp_files.append(path)
+        return path
+
+    def _build_ssl_options(self) -> dict[str, object]:
+        ssl_options: dict[str, object] = {
+            "cert_reqs": ssl.CERT_REQUIRED if self.verify_ssl else ssl.CERT_NONE,
+        }
+        if self.ca_cert_data:
+            ssl_options["ca_certs"] = self._write_temp_file(self.ca_cert_data, ".crt")
+        if self.client_cert_data:
+            ssl_options["certfile"] = self._write_temp_file(self.client_cert_data, ".pem")
+        if self.client_key_data:
+            ssl_options["keyfile"] = self._write_temp_file(self.client_key_data, ".key")
+        if self.tls_server_name:
+            ssl_options["server_hostname"] = self.tls_server_name
+        return ssl_options
+
+    def connect(self):
+        try:
+            self.sock = WebSocket(
+                sslopt=self._build_ssl_options(),
+                skip_utf8_validation=False,
+                enable_multithread=True,
+            )
+            self.sock.connect(
+                self.url,
+                header=[*self.headers, "sec-websocket-protocol: v4.channel.k8s.io"],
+            )
+            self._connected = True
+        except Exception as exc:
+            self.close()
+            raise TerminalSessionError(f"无法连接 Kubernetes Exec Stream: {exc}", status_code=502) from exc
+
+    def is_open(self) -> bool:
+        return bool(self._connected and self.sock and self.sock.connected)
+
+    def _poll_ready(self, timeout: float | None) -> bool:
+        if not self.is_open() or not self.sock or not self.sock.sock:
+            self._connected = False
+            return False
+
+        socket_obj = self.sock.sock
+        if hasattr(select, "poll"):
+            poller = select.poll()
+            poller.register(socket_obj, select.POLLIN)
+            try:
+                wait_time = None if timeout is None else max(0, int(timeout * 1000))
+                events = poller.poll(wait_time)
+                return bool(events)
+            finally:
+                poller.unregister(socket_obj)
+
+        readable, _, _ = select.select((socket_obj,), (), (), timeout)
+        return bool(readable)
+
+    def _record_status(self, payload: str):
+        message = payload.strip()
+        if not message:
+            return
+
+        try:
+            data = yaml.safe_load(message)
+        except yaml.YAMLError:
+            self._status_message = message
+            self._returncode = 1
+            return
+
+        if not isinstance(data, dict):
+            self._status_message = message
+            self._returncode = 1
+            return
+
+        self._status_message = str(data.get("message") or message)
+        if data.get("status") == "Success":
+            self._returncode = 0
+            return
+
+        details = data.get("details") or {}
+        causes = details.get("causes") or []
+        exit_code_text = ""
+        if causes and isinstance(causes[0], dict):
+            exit_code_text = str(causes[0].get("message") or "")
+        try:
+            self._returncode = int(exit_code_text)
+        except (TypeError, ValueError):
+            self._returncode = 1
+
+    def read_frame(self, *, timeout: float | None = 0.0) -> tuple[int, str] | None:
+        if not self.is_open():
+            return None
+        try:
+            if not self._poll_ready(timeout):
+                if not self.sock or not self.sock.connected:
+                    self._connected = False
+                return None
+            if not self.sock:
+                self._connected = False
+                return None
+
+            op_code, frame = self.sock.recv_data_frame(True)
+        except WebSocketConnectionClosedException:
+            self._connected = False
+            return None
+        except Exception as exc:
+            raise TerminalSessionError(f"读取 Kubernetes Exec Stream 失败: {exc}", status_code=502) from exc
+
+        if op_code == ABNF.OPCODE_CLOSE:
+            self._connected = False
+            return None
+        if op_code not in (ABNF.OPCODE_BINARY, ABNF.OPCODE_TEXT):
+            return None
+
+        payload = frame.data
+        if isinstance(payload, bytes):
+            if not payload:
+                return None
+            channel = payload[0]
+            text = payload[1:].decode("utf-8", errors="replace")
+        else:
+            if not payload:
+                return None
+            channel = ord(payload[0])
+            text = payload[1:]
+
+        if channel == self.ERROR_CHANNEL:
+            self._record_status(text)
+        return channel, text
+
+    def _send_channel(self, channel: int, data: str):
+        if not self.is_open() or not self.sock:
+            raise TerminalSessionError("终端会话已关闭。", status_code=410)
+
+        with self._send_lock:
+            try:
+                self.sock.send(f"{chr(channel)}{data}", opcode=ABNF.OPCODE_TEXT)
+            except Exception as exc:
+                raise TerminalSessionError(f"写入 Kubernetes Exec Stream 失败: {exc}", status_code=502) from exc
+
+    def write_stdin(self, data: str):
+        self._send_channel(self.STDIN_CHANNEL, data)
+
+    def resize(self, *, rows: int, cols: int):
+        self._send_channel(
+            self.RESIZE_CHANNEL,
+            json.dumps({"Width": cols, "Height": rows}, separators=(",", ":")),
+        )
+
+    @property
+    def returncode(self) -> int | None:
+        return self._returncode
+
+    @property
+    def status_message(self) -> str:
+        return self._status_message
+
+    def close(self):
+        with self._close_lock:
+            self._connected = False
+            if self.sock:
+                try:
+                    self.sock.close()
+                except Exception:
+                    pass
+                self.sock = None
+
+            for path in self._temp_files:
+                try:
+                    os.remove(path)
+                except FileNotFoundError:
+                    pass
+            self._temp_files = []
 
 
 @dataclass
@@ -33,10 +264,7 @@ class TerminalChunk:
 @dataclass
 class TerminalHandle:
     session_id: int
-    process: subprocess.Popen[bytes]
-    master_fd: int
-    slave_fd: int
-    kubeconfig_path: str
+    connection: KubernetesExecWebSocket
     shell: str
     namespace: str
     container_name: str
@@ -50,27 +278,12 @@ class TerminalHandle:
 
 
 class TerminalHub:
-    ALLOWED_SHELLS = {
-        "sh": "/bin/sh",
-        "/bin/sh": "/bin/sh",
-        "bash": "/bin/bash",
-        "/bin/bash": "/bin/bash",
-    }
-
     def __init__(self):
         self._sessions: dict[int, TerminalHandle] = {}
         self._lock = threading.Lock()
 
     def _normalize_shell(self, shell: str) -> str:
-        normalized = self.ALLOWED_SHELLS.get((shell or "/bin/sh").strip())
-        if not normalized:
-            raise TerminalSessionError("当前终端仅允许 /bin/sh 或 /bin/bash。", status_code=400)
-        return normalized
-
-    @staticmethod
-    def _set_winsize(fd: int, rows: int, cols: int):
-        packed = struct.pack("HHHH", rows, cols, 0, 0)
-        fcntl.ioctl(fd, termios.TIOCSWINSZ, packed)
+        return normalize_terminal_shell(shell)
 
     @staticmethod
     def _append_excerpt(previous: str, incoming: str) -> str:
@@ -104,121 +317,62 @@ class TerminalHub:
         with self._lock:
             self._sessions.pop(handle.session_id, None)
 
-        try:
-            os.close(handle.master_fd)
-        except OSError:
-            pass
-        try:
-            os.close(handle.slave_fd)
-        except OSError:
-            pass
-        try:
-            os.remove(handle.kubeconfig_path)
-        except FileNotFoundError:
-            pass
+        handle.connection.close()
 
     def _reader_loop(self, handle: TerminalHandle):
+        final_status = "success"
+        exit_code: int | None = None
+
         while True:
             try:
-                chunk = os.read(handle.master_fd, 4096)
-                if not chunk:
-                    break
-                self._store_chunk(handle, chunk.decode("utf-8", errors="replace"))
-            except OSError as exc:
-                if exc.errno == errno.EIO:
-                    break
+                event = handle.connection.read_frame(timeout=1.0)
+            except TerminalSessionError as exc:
                 self._store_chunk(handle, f"\n[terminal read error] {exc}\n")
+                final_status = "error"
+                exit_code = handle.connection.returncode
                 break
 
-        return_code = handle.process.poll()
-        if return_code is None:
-            try:
-                return_code = handle.process.wait(timeout=1)
-            except subprocess.TimeoutExpired:
-                return_code = None
+            if event is None:
+                if handle.connection.is_open():
+                    continue
+                exit_code = handle.connection.returncode
+                final_status = "success" if exit_code == 0 else "error"
+                status_message = handle.connection.status_message
+                if final_status == "error" and status_message:
+                    self._store_chunk(handle, f"\n[terminal status] {status_message}\n")
+                break
 
-        final_status = "success" if return_code == 0 else "error"
-        self._finalize_session(handle, status=final_status, exit_code=return_code)
+            channel, text = event
+            if channel in (KubernetesExecWebSocket.STDOUT_CHANNEL, KubernetesExecWebSocket.STDERR_CHANNEL):
+                self._store_chunk(handle, text)
+
+        self._finalize_session(handle, status=final_status, exit_code=exit_code)
 
     def open_session(
         self,
         *,
         session: StreamSession,
-        kubeconfig_text: str,
-        kubectl_path: str,
-        impersonation_username: str | None,
-        impersonation_groups: list[str],
-        pod_name: str,
+        connection: KubernetesExecWebSocket,
         namespace: str,
         container: str | None,
         shell: str,
         rows: int,
         cols: int,
     ) -> dict[str, object]:
-        if not shutil.which(kubectl_path):
-            raise TerminalSessionError("系统中未找到 kubectl，暂时无法建立终端。", status_code=500)
-
         normalized_shell = self._normalize_shell(shell)
         rows = max(12, min(rows, 120))
         cols = max(40, min(cols, 240))
 
-        kubeconfig_file = tempfile.NamedTemporaryFile(mode="w", delete=False, encoding="utf-8")
-        kubeconfig_file.write(kubeconfig_text)
-        kubeconfig_file.flush()
-        kubeconfig_file.close()
-
-        master_fd, slave_fd = pty.openpty()
-        self._set_winsize(slave_fd, rows, cols)
-
-        args = [
-            kubectl_path,
-            "--kubeconfig",
-            kubeconfig_file.name,
-        ]
-        if impersonation_username:
-            args.extend(["--as", impersonation_username])
-        for group in impersonation_groups:
-            args.extend(["--as-group", group])
-        args.extend(["exec", "-i", "-t", "-n", namespace, pod_name])
-        if container:
-            args.extend(["-c", container])
-        args.extend(["--", normalized_shell])
-
         try:
-            process = subprocess.Popen(
-                args,
-                stdin=slave_fd,
-                stdout=slave_fd,
-                stderr=slave_fd,
-                start_new_session=True,
-                close_fds=True,
-            )
-        except OSError as exc:
-            try:
-                os.close(master_fd)
-            except OSError:
-                pass
-            try:
-                os.close(slave_fd)
-            except OSError:
-                pass
-            try:
-                os.remove(kubeconfig_file.name)
-            except FileNotFoundError:
-                pass
-            raise TerminalSessionError(f"无法启动终端进程: {exc}", status_code=500) from exc
-
-        try:
-            os.close(slave_fd)
-        except OSError:
-            pass
+            connection.connect()
+            connection.resize(rows=rows, cols=cols)
+        except TerminalSessionError:
+            connection.close()
+            raise
 
         handle = TerminalHandle(
             session_id=session.id,
-            process=process,
-            master_fd=master_fd,
-            slave_fd=-1,
-            kubeconfig_path=kubeconfig_file.name,
+            connection=connection,
             shell=normalized_shell,
             namespace=namespace,
             container_name=container or "",
@@ -292,11 +446,7 @@ class TerminalHub:
         if not data:
             raise TerminalSessionError("终端输入不能为空。", status_code=400)
 
-        try:
-            os.write(handle.master_fd, data.encode("utf-8"))
-        except OSError as exc:
-            raise TerminalSessionError(f"终端输入写入失败: {exc}", status_code=500) from exc
-
+        handle.connection.write_stdin(data)
         return self.read_output(session_id=session_id, cursor=0 if handle.cursor == 0 else handle.cursor)
 
     def resize(self, *, session_id: int, rows: int, cols: int):
@@ -305,28 +455,16 @@ class TerminalHub:
             raise TerminalSessionError("终端会话已关闭。", status_code=410)
         rows = max(12, min(rows, 120))
         cols = max(40, min(cols, 240))
-        try:
-            self._set_winsize(handle.master_fd, rows, cols)
-        except OSError as exc:
-            raise TerminalSessionError(f"终端尺寸调整失败: {exc}", status_code=500) from exc
+        handle.connection.resize(rows=rows, cols=cols)
 
     def close_session(self, *, session_id: int, status: str = "stopped"):
-        handle = None
         with self._lock:
             handle = self._sessions.get(session_id)
         if not handle:
             return
 
-        if handle.process.poll() is None:
-            try:
-                handle.process.terminate()
-                handle.process.wait(timeout=1)
-            except subprocess.TimeoutExpired:
-                handle.process.kill()
-            except OSError:
-                pass
-
-        self._finalize_session(handle, status=status, exit_code=handle.process.poll())
+        handle.connection.close()
+        self._finalize_session(handle, status=status, exit_code=handle.connection.returncode)
 
 
 terminal_hub = TerminalHub()

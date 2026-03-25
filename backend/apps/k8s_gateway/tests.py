@@ -7,10 +7,91 @@ from rest_framework.test import APIClient
 from apps.clusters.models import Cluster, ClusterCapability, ClusterCredential, ClusterHealthStatus
 from apps.iam.models import User
 from apps.streams.models import StreamSession
-from .services import KubernetesClient, build_resource_path
+from .services import KubernetesAPIError, KubernetesClient, build_resource_path
+
+
+class FakeExecStreamConnection:
+    STDOUT_CHANNEL = 1
+    STDERR_CHANNEL = 2
+
+    def __init__(self, events=None, *, linger=False, final_returncode=0, final_status_message=""):
+        self.events = list(events or [])
+        self.linger = linger
+        self.final_returncode = final_returncode
+        self.final_status_message = final_status_message
+        self.returncode = None
+        self.status_message = ""
+        self.connected = False
+
+    def connect(self):
+        self.connected = True
+
+    def is_open(self):
+        return self.connected
+
+    def read_frame(self, *, timeout=0.0):
+        if self.events:
+            return self.events.pop(0)
+        if not self.linger and self.connected:
+            self.connected = False
+            self.returncode = self.final_returncode
+            self.status_message = self.final_status_message
+        return None
+
+    def close(self):
+        self.connected = False
 
 
 class KubernetesGatewayServiceTests(TestCase):
+    def create_service_client(self, *, server="https://master:6443"):
+        index = Cluster.objects.count() + 1
+        cluster = Cluster.objects.create(
+            name=f"demo-service-{index}",
+            slug=f"demo-service-{index}",
+            environment="dev",
+            server=server,
+            default_context="demo",
+        )
+        credential = ClusterCredential(cluster=cluster, active_context="demo", fingerprint=f"test-{index}")
+        credential.set_kubeconfig(
+            f"""
+apiVersion: v1
+kind: Config
+clusters:
+  - name: demo
+    cluster:
+      server: {server}
+users:
+  - name: demo
+    user:
+      token: demo-token
+contexts:
+  - name: demo
+    context:
+      cluster: demo
+      user: demo
+current-context: demo
+"""
+        )
+        credential.save()
+        ClusterCapability.objects.create(cluster=cluster, supports_exec=True)
+        ClusterHealthStatus.objects.create(cluster=cluster)
+        return KubernetesClient(cluster)
+
+    def test_build_pod_exec_stream_uses_websocket_scheme_and_preserves_server_path(self):
+        client = self.create_service_client(server="https://master:6443/prefix")
+
+        connection = client._build_pod_exec_stream(
+            name="demo-pod",
+            namespace="default",
+            container="demo",
+            command=["/bin/sh"],
+        )
+
+        self.assertTrue(connection.url.startswith("wss://master:6443/prefix/api/v1/namespaces/default/pods/demo-pod/exec?"))
+        self.assertIn("container=demo", connection.url)
+        self.assertIn("command=%2Fbin%2Fsh", connection.url)
+
     def test_build_resource_path_for_namespaced_resource(self):
         path = build_resource_path(
             group="apps",
@@ -86,6 +167,86 @@ current-context: demo
         handlers = build_opener_mock.call_args.args
         self.assertEqual(type(handlers[0]).__name__, "ProxyHandler")
         self.assertEqual(getattr(handlers[0], "proxies", None), {})
+
+    def test_exec_pod_command_uses_stream_and_returns_output(self):
+        client = self.create_service_client()
+        connection = FakeExecStreamConnection(
+            events=[
+                (1, "uid=0(root)\n"),
+                (2, "warning line\n"),
+            ],
+            final_returncode=0,
+        )
+
+        with patch.object(client, "_prepare_pod_exec", return_value="default"), patch.object(
+            client,
+            "_build_pod_exec_stream",
+            return_value=connection,
+        ) as build_stream_mock:
+            payload = client.exec_pod_command(
+                name="demo-pod",
+                namespace="default",
+                container="demo",
+                shell_command="id",
+                timeout_seconds=10,
+            )
+
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["exit_code"], 0)
+        self.assertEqual(payload["stdout"], "uid=0(root)\n")
+        self.assertEqual(payload["stderr"], "warning line\n")
+        build_stream_mock.assert_called_once_with(
+            name="demo-pod",
+            namespace="default",
+            container="demo",
+            command=["/bin/sh", "-lc", "id"],
+            stdin=False,
+            tty=False,
+        )
+
+    def test_exec_pod_command_includes_stream_status_message_on_failure(self):
+        client = self.create_service_client()
+        connection = FakeExecStreamConnection(
+            final_returncode=127,
+            final_status_message='exec: "/bin/bash": stat /bin/bash: no such file or directory',
+        )
+
+        with patch.object(client, "_prepare_pod_exec", return_value="default"), patch.object(
+            client,
+            "_build_pod_exec_stream",
+            return_value=connection,
+        ):
+            payload = client.exec_pod_command(
+                name="demo-pod",
+                namespace="default",
+                container="demo",
+                shell_command="bash",
+                timeout_seconds=10,
+            )
+
+        self.assertFalse(payload["success"])
+        self.assertEqual(payload["exit_code"], 127)
+        self.assertIn("no such file or directory", payload["stderr"])
+
+    def test_exec_pod_command_times_out_when_stream_does_not_finish(self):
+        client = self.create_service_client()
+        connection = FakeExecStreamConnection(linger=True)
+
+        with patch.object(client, "_prepare_pod_exec", return_value="default"), patch.object(
+            client,
+            "_build_pod_exec_stream",
+            return_value=connection,
+        ), patch("apps.k8s_gateway.services.time.monotonic", side_effect=[0.0, 3.1]):
+            with self.assertRaises(KubernetesAPIError) as context:
+                client.exec_pod_command(
+                    name="demo-pod",
+                    namespace="default",
+                    container="demo",
+                    shell_command="sleep 10",
+                    timeout_seconds=3,
+                )
+
+        self.assertIn("Pod Exec 执行超时", str(context.exception))
 
 
 class KubernetesGatewayAPITests(TestCase):

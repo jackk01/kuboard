@@ -16,7 +16,6 @@ import type {
   ResourceSchemaResponse,
   ResourceWatchResponse,
   StreamSessionSummary,
-  TerminalOutputResponse,
   TerminalSessionResponse,
 } from '../types'
 
@@ -76,7 +75,6 @@ const terminalError = ref('')
 const terminalConnecting = ref(false)
 const terminalSending = ref(false)
 const terminalCursor = ref(0)
-const terminalShell = ref('/bin/sh')
 const terminalInput = ref('')
 const terminalRows = ref(32)
 const terminalCols = ref(120)
@@ -353,109 +351,12 @@ const resourcePageEnd = computed(() =>
 )
 
 const namespaceOptions = computed(() => discovery.value?.namespaces ?? [])
-const permissionLabels: Record<string, string> = {
-  get: '读取',
-  list: '列表',
-  watch: '监听',
-  create: '创建',
-  update: '更新',
-  patch: 'Patch',
-  delete: '删除',
-}
-
-const previewJson = computed(() =>
-  selectedDetail.value
-    ? JSON.stringify(selectedDetail.value.object, null, 2)
-    : '// 选择一条资源后在这里查看原始对象',
-)
 
 const selectedNamespaceOrDefault = computed(
   () => selectedItem.value?.metadata?.namespace || selectedNamespace.value || discovery.value?.context.default_namespace || 'default',
 )
 
-const permissionEntries = computed(() =>
-  Object.entries(resourcePermissions.value?.verbs ?? {}).map(([key, review]) => ({
-    key,
-    label: permissionLabels[key] ?? key,
-    ...review,
-  })),
-)
-
-const subresourceEntries = computed(() =>
-  Object.entries(resourcePermissions.value?.subresources ?? {}).map(([key, review]) => ({
-    key,
-    label: key === 'log' ? '日志' : key === 'exec' ? 'Exec' : key,
-    ...review,
-  })),
-)
-
 const containerOptions = computed(() => extractContainerNames(selectedDetail.value?.object ?? null))
-const schemaPreviewItems = computed(() => {
-  const results: Array<{ path: string; type: string; required: boolean; description: string; depth: number }> = []
-
-  function normalizeType(node: Record<string, any>) {
-    if (typeof node.type === 'string') return node.type
-    if (Array.isArray(node.type) && node.type.length) return node.type.join(' | ')
-    if (node.$ref) return '$ref'
-    if (node.properties) return 'object'
-    if (node.items) return 'array'
-    if (node.oneOf || node.anyOf || node.allOf) return 'union'
-    return '--'
-  }
-
-  function walk(node: Record<string, any> | null | undefined, prefix = '', depth = 0, requiredKeys: string[] = []) {
-    if (!node || depth > 2) {
-      return
-    }
-    const properties = node.properties
-    if (!properties || typeof properties !== 'object') {
-      return
-    }
-
-    Object.entries(properties).forEach(([key, value]) => {
-      if (!value || typeof value !== 'object') {
-        return
-      }
-      const nextPath = prefix ? `${prefix}.${key}` : key
-      results.push({
-        path: nextPath,
-        type: normalizeType(value as Record<string, any>),
-        required: requiredKeys.includes(key),
-        description: String((value as Record<string, any>).description || ''),
-        depth,
-      })
-      walk(
-        value as Record<string, any>,
-        nextPath,
-        depth + 1,
-        Array.isArray((value as Record<string, any>).required) ? (value as Record<string, any>).required : [],
-      )
-      if ((value as Record<string, any>).items && typeof (value as Record<string, any>).items === 'object') {
-        walk(
-          (value as Record<string, any>).items as Record<string, any>,
-          `${nextPath}[]`,
-          depth + 1,
-          Array.isArray(((value as Record<string, any>).items as Record<string, any>).required)
-            ? (((value as Record<string, any>).items as Record<string, any>).required as string[])
-            : [],
-        )
-      }
-    })
-  }
-
-  walk(resourceSchema.value?.schema ?? null, '', 0, Array.isArray(resourceSchema.value?.schema?.required) ? resourceSchema.value?.schema?.required : [])
-  return results.slice(0, 24)
-})
-const schemaJsonPreview = computed(() =>
-  resourceSchema.value ? JSON.stringify(resourceSchema.value.schema, null, 2) : '// 选择资源后在这里查看结构化 schema',
-)
-const schemaSampleHint = computed(() => {
-  if (!resourceSchema.value || resourceSchema.value.source !== 'inferred' || !resourceSchema.value.metadata.empty_sample) {
-    return ''
-  }
-  const namespace = String(resourceSchema.value.metadata.sample_namespace || selectedNamespace.value || '--')
-  return `当前名称空间 ${namespace} 下暂无该资源实例，Schema 预览已回退为基础结构。`
-})
 const formEditableFields = computed(() => {
   const results: Array<{ path: string; type: string; required: boolean; description: string }> = []
 
@@ -515,7 +416,6 @@ const canEditYaml = computed(
   () => Boolean(resourcePermissions.value?.verbs.patch?.allowed || resourcePermissions.value?.verbs.update?.allowed),
 )
 const canDeleteResource = computed(() => Boolean(resourcePermissions.value?.verbs.delete?.allowed))
-const canWatchResources = computed(() => Boolean(resourcePermissions.value?.verbs.watch?.allowed))
 const canOpenTerminal = computed(
   () =>
     Boolean(
@@ -642,78 +542,8 @@ function stopWatching(options: { keepEvents?: boolean } = {}) {
   }
 }
 
-function formatWatchTime(timestamp: string) {
-  const value = new Date(timestamp)
-  if (Number.isNaN(value.getTime())) {
-    return '--'
-  }
-  return value.toLocaleTimeString('zh-CN', { hour12: false })
-}
-
 function cloneObject<T>(value: T): T {
   return JSON.parse(JSON.stringify(value))
-}
-
-function getValueAtPath(target: Record<string, any> | null, path: string) {
-  if (!target) {
-    return undefined
-  }
-  return path.split('.').reduce<any>((cursor, segment) => {
-    if (cursor && typeof cursor === 'object') {
-      return cursor[segment]
-    }
-    return undefined
-  }, target)
-}
-
-function setValueAtPath(target: Record<string, any>, path: string, value: unknown) {
-  const segments = path.split('.')
-  let cursor: Record<string, any> = target
-
-  segments.forEach((segment, index) => {
-    if (index === segments.length - 1) {
-      cursor[segment] = value
-      return
-    }
-    if (!cursor[segment] || typeof cursor[segment] !== 'object' || Array.isArray(cursor[segment])) {
-      cursor[segment] = {}
-    }
-    cursor = cursor[segment]
-  })
-}
-
-function mergeLogText(existingText: string, incomingText: string) {
-  if (!incomingText.trim()) {
-    return existingText
-  }
-  if (!existingText.trim()) {
-    return incomingText
-  }
-
-  const existingLines = existingText.split('\n')
-  const incomingLines = incomingText.split('\n')
-  if (existingLines[existingLines.length - 1] === incomingLines[0]) {
-    incomingLines.shift()
-  }
-  const suffix = incomingLines.join('\n')
-  if (!suffix.trim()) {
-    return existingText
-  }
-  return `${existingText.replace(/\n+$/, '')}\n${suffix}`
-}
-
-function watchEventBadgeClass(type: string) {
-  if (type === 'ADDED') return 'status-success'
-  if (type === 'DELETED') return 'status-denied'
-  if (type === 'BOOKMARK') return 'status-warning'
-  return 'status-info'
-}
-
-function schemaSourceLabel(source?: string) {
-  if (source === 'crd') return 'CRD Schema'
-  if (source === 'openapi-v3') return 'OpenAPI v3'
-  if (source === 'inferred') return '样本推断'
-  return '--'
 }
 
 function activateCommonResource(item: {
@@ -813,23 +643,6 @@ function hydrateFormDraft(object: Record<string, any> | null) {
   formDraftObject.value = object ? cloneObject(object) : null
 }
 
-function updateFormField(path: string, type: string, rawValue: string | boolean) {
-  if (!formDraftObject.value) {
-    return
-  }
-
-  let normalizedValue: unknown = rawValue
-  if (type === 'integer') {
-    normalizedValue = rawValue === '' ? null : Number.parseInt(String(rawValue), 10)
-  } else if (type === 'number') {
-    normalizedValue = rawValue === '' ? null : Number.parseFloat(String(rawValue))
-  } else if (type === 'boolean') {
-    normalizedValue = Boolean(rawValue)
-  }
-
-  setValueAtPath(formDraftObject.value, path, normalizedValue)
-}
-
 async function closeStreamSession(sessionId: number, statusValue = 'stopped') {
   try {
     await apiRequest(`/api/v1/streams/sessions/${sessionId}/close`, {
@@ -839,17 +652,6 @@ async function closeStreamSession(sessionId: number, statusValue = 'stopped') {
   } catch {
     // Ignore close failures to avoid blocking the main UX.
   }
-}
-
-function appendWatchEvents(events: ResourceWatchResponse['events']) {
-  if (!events.length) {
-    return
-  }
-  const stampedEvents = events.map((event) => ({
-    ...event,
-    received_at: new Date().toISOString(),
-  }))
-  watchEvents.value = [...stampedEvents.reverse(), ...watchEvents.value].slice(0, 24)
 }
 
 function resourceItemKey(item: Record<string, any> | null) {
@@ -1068,109 +870,6 @@ function syncResourcePageToSelectedItem() {
 
 function goToResourcePage(page: number) {
   resourcePage.value = Math.min(Math.max(page, 1), resourceTotalPages.value)
-}
-
-function clearSelectedResourceState(message = '') {
-  selectedItem.value = null
-  selectedDetail.value = null
-  resourcePermissions.value = null
-  resourceSchema.value = null
-  formDraftObject.value = null
-  createOriginItem.value = null
-  editorText.value = ''
-  isEditing.value = false
-  isCreating.value = false
-  editorMode.value = 'yaml'
-  yamlDialogOpen.value = false
-  detailError.value = ''
-  permissionError.value = ''
-  applyError.value = ''
-  applyMessage.value = ''
-  resetLogState()
-  resetTerminalState()
-  watchSyncMessage.value = message
-}
-
-function syncResourceListFromWatch(events: ResourceWatchResponse['events']) {
-  if (!resourceList.value || !events.length) {
-    return
-  }
-
-  const nextItems = [...resourceList.value.items]
-  let changed = false
-
-  for (const event of events) {
-    const item = event.object
-    const itemKey = item?.metadata?.name
-      ? resourceItemKey(item)
-      : `${event.metadata.namespace || 'cluster'}:${event.metadata.name || ''}`
-    const currentIndex = nextItems.findIndex((candidate) => resourceItemKey(candidate) === itemKey)
-
-    if (event.type === 'DELETED') {
-      if (currentIndex >= 0) {
-        nextItems.splice(currentIndex, 1)
-        changed = true
-      }
-      if (selectedItem.value && resourceItemKey(selectedItem.value) === itemKey) {
-        clearSelectedResourceState(`当前选中的资源 ${event.metadata.name} 已被删除，详情视图已同步清空。`)
-      }
-      continue
-    }
-
-    if (!item?.metadata?.name) {
-      continue
-    }
-
-    if (currentIndex >= 0) {
-      nextItems.splice(currentIndex, 1, item)
-    } else {
-      nextItems.unshift(item)
-    }
-    changed = true
-
-    if (selectedItem.value && resourceItemKey(selectedItem.value) === itemKey) {
-      selectedItem.value = item
-      scheduleSelectedDetailRefresh(item, event.type)
-    }
-  }
-
-  if (!changed) {
-    return
-  }
-
-  const latestResourceVersion =
-    [...events]
-      .reverse()
-      .find((event) => event.metadata.resource_version)
-      ?.metadata.resource_version || resourceList.value.metadata.resource_version
-
-  resourceList.value = {
-    ...resourceList.value,
-    items: nextItems,
-    metadata: {
-      ...resourceList.value.metadata,
-      count: nextItems.length,
-      resource_version: latestResourceVersion,
-    },
-  }
-}
-
-function scheduleSelectedDetailRefresh(item: Record<string, any>, eventType: string) {
-  clearDetailRefreshTimer()
-
-  if (isEditing.value) {
-    watchSyncMessage.value = `当前资源收到 ${eventType} 事件，编辑器内容已保留，避免自动覆盖你正在修改的 YAML。`
-    return
-  }
-
-  watchSyncMessage.value = `收到 ${eventType} 事件，正在同步当前资源详情。`
-  detailRefreshTimer = window.setTimeout(() => {
-    void loadResourceDetail(item, {
-      preserveFeedback: true,
-      preserveStreams: true,
-      fromWatch: true,
-    })
-  }, 320)
 }
 
 function normalizeReplicaCount(value: unknown, fallback = 0) {
@@ -1844,105 +1543,6 @@ async function confirmDeleteResource() {
   }
 }
 
-async function loadPodLogs(options: { follow?: boolean; append?: boolean } = {}) {
-  if (!selectedClusterId.value || !selectedDetail.value || !isPodResource.value || !canViewPodLogs.value) {
-    return
-  }
-
-  if (!options.append) {
-    loadingLogs.value = true
-  }
-  if (!options.follow || !options.append) {
-    logsError.value = ''
-  }
-
-  const query = new URLSearchParams({
-    namespace: selectedDetail.value.metadata.namespace || selectedNamespaceOrDefault.value,
-    tail_lines: String(logTailLines.value),
-    timestamps: 'true',
-  })
-
-  if (selectedLogContainer.value) {
-    query.set('container', selectedLogContainer.value)
-  }
-  if (options.follow) {
-    query.set('follow', 'true')
-    const sinceTime = logFollowCursor.value || logsResponse.value?.cursor.since_time || ''
-    if (sinceTime) {
-      query.set('since_time', sinceTime)
-    }
-    if (logFollowSession.value) {
-      query.set('session_id', String(logFollowSession.value.id))
-    }
-  }
-
-  try {
-    const payload = await apiRequest<PodLogsResponse>(
-      `/api/v1/clusters/${selectedClusterId.value}/resources/core/v1/pods/${encodeURIComponent(selectedDetail.value.metadata.name)}/logs?${query.toString()}`,
-    )
-    logsResponse.value =
-      options.append && logsResponse.value
-        ? {
-            ...payload,
-            text: mergeLogText(logsResponse.value.text, payload.text),
-          }
-        : payload
-    logFollowCursor.value = payload.cursor.since_time || logFollowCursor.value
-    logFollowSession.value = payload.session
-  } catch (error) {
-    if (!options.append) {
-      logsResponse.value = null
-    }
-    if (error instanceof ApiError) {
-      logsError.value = error.message
-    } else {
-      logsError.value = '日志读取失败。'
-    }
-    if (options.follow) {
-      logsFollowing.value = false
-      logFollowLoopToken += 1
-      clearLogFollowTimer()
-    }
-  } finally {
-    if (!options.append) {
-      loadingLogs.value = false
-    }
-  }
-}
-
-async function runLogFollowLoop(loopToken: number, append = false) {
-  if (
-    !logsFollowing.value ||
-    loopToken !== logFollowLoopToken ||
-    !selectedClusterId.value ||
-    !selectedDetail.value ||
-    !isPodResource.value
-  ) {
-    return
-  }
-
-  await loadPodLogs({ follow: true, append })
-
-  if (logsFollowing.value && loopToken === logFollowLoopToken) {
-    logFollowTimer = window.setTimeout(() => {
-      void runLogFollowLoop(loopToken, true)
-    }, 2200)
-  }
-}
-
-function startLogFollowing() {
-  if (!canViewPodLogs.value || !selectedDetail.value) {
-    return
-  }
-
-  logsFollowing.value = true
-  logsError.value = ''
-  logFollowLoopToken += 1
-  clearLogFollowTimer()
-  logFollowCursor.value = logsResponse.value?.cursor.since_time || ''
-  void runLogFollowLoop(logFollowLoopToken, Boolean(logsResponse.value))
-}
-
 function stopLogFollowing() {
   const sessionId = logFollowSession.value?.id ?? null
   logsFollowing.value = false
@@ -1953,227 +1553,6 @@ function stopLogFollowing() {
   if (sessionId) {
     void closeStreamSession(sessionId)
   }
-}
-
-async function pollTerminalOutput(loopToken: number) {
-  if (!terminalSession.value || loopToken !== terminalLoopToken) {
-    return
-  }
-
-  try {
-    const payload = await apiRequest<TerminalOutputResponse>(
-      `/api/v1/streams/sessions/${terminalSession.value.session.id}/output?cursor=${terminalCursor.value}`,
-    )
-    if (loopToken !== terminalLoopToken) {
-      return
-    }
-    if (payload.text) {
-      terminalOutput.value = `${terminalOutput.value}${payload.text}`.slice(-60000)
-    }
-    terminalCursor.value = payload.cursor
-    if (payload.closed) {
-      terminalSession.value = {
-        ...terminalSession.value,
-        session: {
-          ...terminalSession.value.session,
-          status: payload.status,
-          closed_at: payload.closed_at,
-        },
-      }
-      return
-    }
-  } catch (error) {
-    if (loopToken !== terminalLoopToken) {
-      return
-    }
-    if (error instanceof ApiError) {
-      terminalError.value = error.message
-    } else {
-      terminalError.value = '终端输出读取失败。'
-    }
-    return
-  }
-
-  if (terminalSession.value && loopToken === terminalLoopToken) {
-    terminalPollTimer = window.setTimeout(() => {
-      void pollTerminalOutput(loopToken)
-    }, 900)
-  }
-}
-
-async function openTerminalSession() {
-  if (!selectedClusterId.value || !selectedDetail.value || !isPodResource.value || !canOpenTerminal.value) {
-    return
-  }
-
-  resetTerminalState()
-  terminalConnecting.value = true
-  terminalError.value = ''
-
-  try {
-    terminalSession.value = await apiRequest<TerminalSessionResponse>(
-      `/api/v1/clusters/${selectedClusterId.value}/resources/core/v1/pods/${encodeURIComponent(selectedDetail.value.metadata.name)}/terminal`,
-      {
-        method: 'POST',
-        body: JSON.stringify({
-          namespace: selectedDetail.value.metadata.namespace || selectedNamespaceOrDefault.value,
-          container: selectedTerminalContainer.value || undefined,
-          shell: terminalShell.value,
-          rows: terminalRows.value,
-          cols: terminalCols.value,
-        }),
-      },
-    )
-    terminalOutput.value = terminalSession.value.text || ''
-    terminalCursor.value = terminalSession.value.cursor || 0
-    terminalLoopToken += 1
-    void pollTerminalOutput(terminalLoopToken)
-  } catch (error) {
-    terminalSession.value = null
-    if (error instanceof ApiError) {
-      terminalError.value = error.message
-    } else {
-      terminalError.value = '终端建立失败。'
-    }
-  } finally {
-    terminalConnecting.value = false
-  }
-}
-
-async function sendTerminalInput(data: string) {
-  if (!terminalSession.value || !data) {
-    return
-  }
-
-  terminalSending.value = true
-  terminalError.value = ''
-  try {
-    await apiRequest(`/api/v1/streams/sessions/${terminalSession.value.session.id}/input`, {
-      method: 'POST',
-      body: JSON.stringify({ input: data }),
-    })
-  } catch (error) {
-    if (error instanceof ApiError) {
-      terminalError.value = error.message
-    } else {
-      terminalError.value = '终端输入发送失败。'
-    }
-  } finally {
-    terminalSending.value = false
-  }
-}
-
-async function submitTerminalInput() {
-  const value = terminalInput.value
-  if (!value.trim()) {
-    return
-  }
-  terminalInput.value = ''
-  await sendTerminalInput(`${value}\n`)
-}
-
-async function sendTerminalShortcut(shortcut: 'enter' | 'ctrlc') {
-  await sendTerminalInput(shortcut === 'enter' ? '\n' : '\u0003')
-}
-
-async function resizeTerminal() {
-  if (!terminalSession.value) {
-    return
-  }
-  try {
-    await apiRequest(`/api/v1/streams/sessions/${terminalSession.value.session.id}/resize`, {
-      method: 'POST',
-      body: JSON.stringify({
-        rows: terminalRows.value,
-        cols: terminalCols.value,
-      }),
-    })
-  } catch (error) {
-    if (error instanceof ApiError) {
-      terminalError.value = error.message
-    } else {
-      terminalError.value = '终端尺寸调整失败。'
-    }
-  }
-}
-
-async function runWatchLoop(loopToken: number) {
-  if (
-    !watchActive.value ||
-    loopToken !== watchLoopToken ||
-    !selectedClusterId.value ||
-    !selectedGroup.value ||
-    !selectedResourceName.value
-  ) {
-    return
-  }
-
-  watchLoading.value = true
-  watchError.value = ''
-
-  const query = new URLSearchParams({
-    timeout_seconds: '8',
-  })
-
-  if (selectedResource.value?.namespaced) {
-    query.set('namespace', selectedNamespace.value || discovery.value?.context.default_namespace || 'default')
-  }
-  if (watchCursor.value) {
-    query.set('resource_version', watchCursor.value)
-  }
-
-  try {
-    const payload = await apiRequest<ResourceWatchResponse>(
-      `/api/v1/clusters/${selectedClusterId.value}/watch/resources/${selectedGroup.value.group}/${selectedGroup.value.version}/${selectedResourceName.value}?${query.toString()}`,
-    )
-    if (loopToken !== watchLoopToken) {
-      return
-    }
-    if (payload.metadata.next_resource_version) {
-      watchCursor.value = payload.metadata.next_resource_version
-    } else if (!watchCursor.value) {
-      watchCursor.value = payload.metadata.resource_version
-    }
-    appendWatchEvents(payload.events)
-    syncResourceListFromWatch(payload.events)
-  } catch (error) {
-    if (loopToken !== watchLoopToken) {
-      return
-    }
-    watchActive.value = false
-    if (error instanceof ApiError) {
-      watchError.value = error.message
-    } else {
-      watchError.value = '资源 Watch 失败，请稍后重试。'
-    }
-    return
-  } finally {
-    if (loopToken === watchLoopToken) {
-      watchLoading.value = false
-    }
-  }
-
-  if (watchActive.value && loopToken === watchLoopToken) {
-    watchTimer = window.setTimeout(() => {
-      void runWatchLoop(loopToken)
-    }, 500)
-  }
-}
-
-function startWatching() {
-  if (!canWatchResources.value || !selectedClusterId.value || !selectedGroup.value || !selectedResourceName.value) {
-    return
-  }
-
-  stopWatching()
-  watchSyncMessage.value = ''
-  watchEvents.value = []
-  watchError.value = ''
-  watchCursor.value =
-    resourceList.value?.metadata.resource_version || selectedDetail.value?.metadata.resource_version || ''
-  watchActive.value = true
-  watchLoopToken += 1
-  void runWatchLoop(watchLoopToken)
 }
 
 onMounted(async () => {
@@ -2523,99 +1902,92 @@ watch(
           当前处于新建草稿模式，编辑器接受 YAML 或 JSON；Create 会调用 Kubernetes 资源集合创建接口。
         </div>
 
-        <div v-if="isPodResource && !isCreating" class="pod-tools-grid">
-          <section class="log-panel pod-tool-card">
-            <div class="pod-tool-header">
-              <div class="pod-tool-summary">
-                <h2 style="font-size: 15px">Pod 日志</h2>
-                <p>选择好容器和输出行数后，会在新的浏览器页签中打开日志视图，并默认开启追踪模式。</p>
+        <section v-if="isPodResource && !isCreating" class="log-panel pod-quick-panel">
+          <div class="pod-quick-header">
+            <div>
+              <h2 class="pod-quick-title">Pod 操作</h2>
+              <p class="pod-quick-description">保留日志与终端入口，统一到同一操作区，方便快速排查。</p>
+            </div>
+            <div class="pod-quick-actions">
+              <button class="button button-primary pod-quick-action" :disabled="!canViewPodLogs" @click="openPodLogsInNewTab">
+                查看日志
+              </button>
+              <button
+                class="button button-secondary pod-quick-action"
+                :disabled="!canOpenTerminal"
+                @click="openPodTerminalInNewTab('/bin/sh')"
+              >
+                sh
+              </button>
+              <button
+                class="button button-secondary pod-quick-action"
+                :disabled="!canOpenTerminal"
+                @click="openPodTerminalInNewTab('/bin/bash')"
+              >
+                bash
+              </button>
+            </div>
+          </div>
+
+          <div class="pod-quick-grid">
+            <section class="pod-quick-group">
+              <h3 class="pod-quick-group-title">日志配置</h3>
+              <div class="toolbar-grid pod-quick-toolbar pod-quick-toolbar-logs">
+                <label class="field-label">
+                  日志容器
+                  <select v-model="selectedLogContainer" :disabled="!containerOptions.length || !canViewPodLogs">
+                    <option value="">自动选择</option>
+                    <option v-for="container in containerOptions" :key="container" :value="container">
+                      {{ container }}
+                    </option>
+                  </select>
+                </label>
+
+                <label class="field-label">
+                  初始日志行数
+                  <input v-model.number="logTailLines" type="number" min="10" max="2000" :disabled="!canViewPodLogs" />
+                </label>
               </div>
-              <div class="pod-tool-actions">
-                <button class="button button-primary" :disabled="!canViewPodLogs" @click="openPodLogsInNewTab">
-                  查看日志
-                </button>
+              <div v-if="!canViewPodLogs && !loadingPermissions" class="helper-text pod-quick-helper">
+                当前账号没有 `pods/log` 读取权限，暂时无法打开日志页签。
               </div>
-            </div>
-
-            <div class="toolbar-grid logs-toolbar">
-              <label class="field-label">
-                Container
-                <select v-model="selectedLogContainer" :disabled="!containerOptions.length || !canViewPodLogs">
-                  <option value="">自动选择</option>
-                  <option v-for="container in containerOptions" :key="container" :value="container">
-                    {{ container }}
-                  </option>
-                </select>
-              </label>
-
-              <label class="field-label">
-                Tail Lines
-                <input v-model.number="logTailLines" type="number" min="10" max="2000" :disabled="!canViewPodLogs" />
-              </label>
-            </div>
-
-            <div v-if="!canViewPodLogs && !loadingPermissions" class="helper-text pod-tool-helper">
-              当前账号没有 `pods/log` 读取权限，日志面板已保持只读不可用。
-            </div>
-            <div v-else class="helper-text pod-tool-helper">
-              打开的日志页会默认追踪最新输出，你也可以在新页签中暂停追踪并调整输出行数后再刷新。
-            </div>
-          </section>
-
-          <section class="log-panel pod-tool-card">
-            <div class="pod-tool-header">
-              <div class="pod-tool-summary">
-                <h2 style="font-size: 15px">网页终端</h2>
-                <p>选择容器后在新的浏览器页签中打开终端，可直接进入 `/bin/sh` 或 `/bin/bash`。</p>
+              <div v-else class="helper-text pod-quick-helper">
+                打开后默认跟随最新输出，如需回看历史日志，可在新页签内调整。
               </div>
-              <div class="button-row pod-tool-actions">
-                <button
-                  class="button button-primary"
-                  :disabled="!canOpenTerminal"
-                  @click="openPodTerminalInNewTab('/bin/sh')"
-                >
-                  打开 sh 终端
-                </button>
-                <button
-                  class="button button-secondary"
-                  :disabled="!canOpenTerminal"
-                  @click="openPodTerminalInNewTab('/bin/bash')"
-                >
-                  打开 bash 终端
-                </button>
+            </section>
+
+            <section class="pod-quick-group">
+              <h3 class="pod-quick-group-title">终端配置</h3>
+              <div class="toolbar-grid pod-quick-toolbar pod-quick-toolbar-terminal">
+                <label class="field-label">
+                  终端容器
+                  <select v-model="selectedTerminalContainer" :disabled="!containerOptions.length || !canOpenTerminal">
+                    <option value="">自动选择</option>
+                    <option v-for="container in containerOptions" :key="`terminal:${container}`" :value="container">
+                      {{ container }}
+                    </option>
+                  </select>
+                </label>
+
+                <label class="field-label">
+                  终端行数
+                  <input v-model.number="terminalRows" type="number" min="12" max="120" :disabled="!canOpenTerminal" />
+                </label>
+
+                <label class="field-label">
+                  终端列数
+                  <input v-model.number="terminalCols" type="number" min="40" max="240" :disabled="!canOpenTerminal" />
+                </label>
               </div>
-            </div>
-
-            <div class="toolbar-grid terminal-toolbar">
-              <label class="field-label">
-                Container
-                <select v-model="selectedTerminalContainer" :disabled="!containerOptions.length || !canOpenTerminal">
-                  <option value="">自动选择</option>
-                  <option v-for="container in containerOptions" :key="`terminal:${container}`" :value="container">
-                    {{ container }}
-                  </option>
-                </select>
-              </label>
-
-              <label class="field-label">
-                Rows
-                <input v-model.number="terminalRows" type="number" min="12" max="120" :disabled="!canOpenTerminal" />
-              </label>
-
-              <label class="field-label">
-                Cols
-                <input v-model.number="terminalCols" type="number" min="40" max="240" :disabled="!canOpenTerminal" />
-              </label>
-            </div>
-
-            <div v-if="!canOpenTerminal && !loadingPermissions" class="helper-text pod-tool-helper">
-              当前账号没有 `pods/exec` 权限，终端功能不可用。
-            </div>
-            <div v-else class="helper-text pod-tool-helper">
-              新页签终端会直接连接到目标容器，并支持发送命令、回车、Ctrl+C 和终端尺寸调整。
-            </div>
-          </section>
-        </div>
+              <div v-if="!canOpenTerminal && !loadingPermissions" class="helper-text pod-quick-helper">
+                当前账号没有 `pods/exec` 权限，暂时无法建立终端会话。
+              </div>
+              <div v-else class="helper-text pod-quick-helper">
+                新页签会直接连接目标容器，支持命令输入、回车、Ctrl+C 和终端尺寸调整。
+              </div>
+            </section>
+          </div>
+        </section>
       </article>
     </section>
 

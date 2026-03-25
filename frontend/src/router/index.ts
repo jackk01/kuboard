@@ -25,6 +25,12 @@ const router = createRouter({
       meta: { requiresAuth: false },
     },
     {
+      path: '/pod-terminal',
+      name: 'pod-terminal',
+      component: PodTerminalPage,
+      meta: { title: '容器终端' },
+    },
+    {
       path: '/',
       component: AppShell,
       children: [
@@ -48,12 +54,6 @@ const router = createRouter({
           name: 'pod-logs',
           component: PodLogsPage,
           meta: { title: 'Pod 日志' },
-        },
-        {
-          path: 'pod-terminal',
-          name: 'pod-terminal',
-          component: PodTerminalPage,
-          meta: { title: '容器终端' },
         },
         {
           path: 'audit',

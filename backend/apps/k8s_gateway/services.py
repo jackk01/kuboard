@@ -4,9 +4,7 @@ import base64
 import json
 import os
 import re
-import shutil
 import ssl
-import subprocess
 import tempfile
 import time
 from copy import deepcopy
@@ -99,17 +97,20 @@ class KubernetesClient:
                 return item
         raise KubernetesAPIError(f"kubeconfig 中未找到 {key}:{name}", status_code=400)
 
-    def _build_headers(self) -> dict[str, str]:
-        headers = {"Accept": "application/json"}
+    def _build_header_items(self, *, accept_json: bool = True) -> list[tuple[str, str]]:
+        items: list[tuple[str, str]] = []
+        if accept_json:
+            items.append(("Accept", "application/json"))
+
         token = self.user_data.get("token")
         if token:
-            headers["Authorization"] = f"Bearer {token}"
+            items.append(("Authorization", f"Bearer {token}"))
         else:
             username = self.user_data.get("username")
             password = self.user_data.get("password")
             if username and password:
                 encoded = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("utf-8")
-                headers["Authorization"] = f"Basic {encoded}"
+                items.append(("Authorization", f"Basic {encoded}"))
             elif not (self.user_data.get("client-certificate-data") and self.user_data.get("client-key-data")):
                 raise KubernetesAPIError(
                     "当前版本仅支持 token、username/password 或客户端证书认证的 kubeconfig。",
@@ -117,7 +118,17 @@ class KubernetesClient:
                 )
 
         if self.impersonation:
-            headers["Impersonate-User"] = self.impersonation.username
+            items.append(("Impersonate-User", self.impersonation.username))
+            for group in self.impersonation.groups:
+                items.append(("Impersonate-Group", group))
+        return items
+
+    def _build_headers(self) -> dict[str, str]:
+        headers = {}
+        for key, value in self._build_header_items():
+            if key == "Impersonate-Group":
+                continue
+            headers[key] = value
         return headers
 
     def _apply_headers(self, req: request.Request, headers: dict[str, str]):
@@ -1088,78 +1099,83 @@ class KubernetesClient:
         shell_command: str,
         timeout_seconds: int = 15,
     ) -> dict[str, Any]:
-        namespace_to_use, kubectl_path = self._prepare_pod_exec(name=name, namespace=namespace)
+        from apps.streams.terminal import TerminalSessionError
+
+        namespace_to_use = self._prepare_pod_exec(name=name, namespace=namespace)
 
         if not shell_command.strip():
             raise KubernetesAPIError("执行命令不能为空。", status_code=400)
 
         command = ["/bin/sh", "-lc", shell_command]
         bounded_timeout = max(3, min(timeout_seconds, 60))
+        started_at = time.monotonic()
+        connection = self._build_pod_exec_stream(
+            name=name,
+            namespace=namespace_to_use,
+            container=container,
+            command=command,
+            stdin=False,
+            tty=False,
+        )
+        stdout_chunks: list[str] = []
+        stderr_chunks: list[str] = []
 
-        with ExitStack() as stack:
-            kubeconfig_file = stack.enter_context(
-                tempfile.NamedTemporaryFile(mode="w", delete=False, encoding="utf-8")
-            )
-            kubeconfig_file.write(self.credential.get_kubeconfig())
-            kubeconfig_file.flush()
-            stack.callback(self._safe_remove, kubeconfig_file.name)
+        try:
+            connection.connect()
+            deadline = started_at + bounded_timeout
 
-            args = [
-                kubectl_path,
-                "--kubeconfig",
-                kubeconfig_file.name,
-                "--request-timeout",
-                f"{bounded_timeout}s",
-            ]
+            while True:
+                if connection.is_open():
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise KubernetesAPIError(
+                            "Pod Exec 执行超时。",
+                            status_code=504,
+                            details={
+                                "timeout_seconds": bounded_timeout,
+                                "command": command,
+                                "partial_output": f"{''.join(stdout_chunks)}\n{''.join(stderr_chunks)}".strip()[:4000],
+                            },
+                        )
+                    timeout = min(1.0, remaining)
+                else:
+                    timeout = 0.0
 
-            if self.impersonation:
-                args.extend(["--as", self.impersonation.username])
-                for group in self.impersonation.groups:
-                    args.extend(["--as-group", group])
+                event = connection.read_frame(timeout=timeout)
+                if event is None:
+                    if connection.is_open():
+                        continue
+                    break
 
-            args.extend(["exec", name, "-n", namespace_to_use])
-            if container:
-                args.extend(["-c", container])
-            args.append("--")
-            args.extend(command)
-
-            started_at = time.monotonic()
-            try:
-                completed = subprocess.run(
-                    args,
-                    capture_output=True,
-                    text=True,
-                    timeout=bounded_timeout + 2,
-                    check=False,
-                )
-            except subprocess.TimeoutExpired as exc:
-                raise KubernetesAPIError(
-                    "Pod Exec 执行超时。",
-                    status_code=504,
-                    details={
-                        "timeout_seconds": bounded_timeout,
-                        "command": command,
-                        "partial_output": (exc.stdout or "")[:4000],
-                    },
-                ) from exc
-            except OSError as exc:
-                raise KubernetesAPIError(
-                    f"无法启动 kubectl: {exc}",
-                    status_code=500,
-                    details={"command": args},
-                ) from exc
+                channel, text = event
+                if channel == connection.STDOUT_CHANNEL:
+                    stdout_chunks.append(text)
+                elif channel == connection.STDERR_CHANNEL:
+                    stderr_chunks.append(text)
+        except KubernetesAPIError:
+            raise
+        except TerminalSessionError as exc:
+            raise KubernetesAPIError(str(exc), status_code=exc.status_code) from exc
+        except Exception as exc:
+            raise KubernetesAPIError(f"Pod Exec 执行失败: {exc}", status_code=502) from exc
+        finally:
+            connection.close()
 
         duration_ms = int((time.monotonic() - started_at) * 1000)
-        stdout = completed.stdout or ""
-        stderr = completed.stderr or ""
+        stdout = "".join(stdout_chunks)
+        stderr = "".join(stderr_chunks)
+        status_message = (connection.status_message or "").strip()
+        if status_message and status_message not in stderr:
+            stderr = f"{stderr}\n{status_message}".strip() if stderr else status_message
+        exit_code = connection.returncode
         return {
             "pod": name,
             "namespace": namespace_to_use,
             "container": container or "",
             "command": command,
             "shell_command": shell_command,
-            "exit_code": completed.returncode,
-            "success": completed.returncode == 0,
+            "exit_code": exit_code,
+            "success": exit_code == 0,
             "stdout": stdout[:20000],
             "stderr": stderr[:20000],
             "duration_ms": duration_ms,
@@ -1177,20 +1193,22 @@ class KubernetesClient:
         rows: int = 32,
         cols: int = 120,
     ) -> dict[str, Any]:
-        from apps.streams.terminal import TerminalSessionError, terminal_hub
+        from apps.streams.terminal import TerminalSessionError, normalize_terminal_shell, terminal_hub
 
-        namespace_to_use, kubectl_path = self._prepare_pod_exec(name=name, namespace=namespace)
+        namespace_to_use = self._prepare_pod_exec(name=name, namespace=namespace)
+        normalized_shell = normalize_terminal_shell(shell)
         try:
             payload = terminal_hub.open_session(
                 session=session,
-                kubeconfig_text=self.credential.get_kubeconfig(),
-                kubectl_path=kubectl_path,
-                impersonation_username=self.impersonation.username if self.impersonation else None,
-                impersonation_groups=list(self.impersonation.groups) if self.impersonation else [],
-                pod_name=name,
+                connection=self._build_pod_exec_stream(
+                    name=name,
+                    namespace=namespace_to_use,
+                    container=container,
+                    command=[normalized_shell],
+                ),
                 namespace=namespace_to_use,
                 container=container,
-                shell=shell,
+                shell=normalized_shell,
                 rows=rows,
                 cols=cols,
             )
@@ -1314,13 +1332,63 @@ class KubernetesClient:
             },
         }
 
-    def _prepare_pod_exec(self, *, name: str, namespace: str | None) -> tuple[str, str]:
+    def _build_pod_exec_stream(
+        self,
+        *,
+        name: str,
+        namespace: str,
+        container: str | None,
+        command: list[str],
+        stdin: bool = True,
+        stdout: bool = True,
+        stderr: bool = True,
+        tty: bool = True,
+    ):
+        from apps.streams.terminal import KubernetesExecWebSocket
+
+        path = f"{build_resource_path(group='core', version='v1', resource='pods', namespaced=True, namespace=namespace, name=name)}/exec"
+        query: list[tuple[str, str]] = [
+            ("stdin", "true" if stdin else "false"),
+            ("stdout", "true" if stdout else "false"),
+            ("stderr", "true" if stderr else "false"),
+            ("tty", "true" if tty else "false"),
+        ]
+        if container:
+            query.append(("container", container))
+        for entry in command:
+            query.append(("command", entry))
+
+        server_parts = parse.urlsplit(self.server)
+        stream_scheme = {
+            "https": "wss",
+            "http": "ws",
+            "wss": "wss",
+            "ws": "ws",
+        }.get(server_parts.scheme, server_parts.scheme)
+        stream_path = f"{server_parts.path.rstrip('/')}{path}" if server_parts.path else path
+        stream_url = parse.urlunsplit(
+            (
+                stream_scheme,
+                server_parts.netloc,
+                stream_path,
+                parse.urlencode(query),
+                "",
+            )
+        )
+
+        return KubernetesExecWebSocket(
+            url=stream_url,
+            headers=[f"{key}: {value}" for key, value in self._build_header_items(accept_json=False)],
+            verify_ssl=not bool(self.cluster_data.get("insecure-skip-tls-verify")),
+            ca_cert_data=self.cluster_data.get("certificate-authority-data"),
+            client_cert_data=self.user_data.get("client-certificate-data"),
+            client_key_data=self.user_data.get("client-key-data"),
+            tls_server_name=self.cluster_data.get("tls-server-name"),
+        )
+
+    def _prepare_pod_exec(self, *, name: str, namespace: str | None) -> str:
         if not self.capability.supports_exec:
             raise KubernetesAPIError("当前集群不支持 pods/exec。", status_code=501)
-
-        kubectl_path = shutil.which("kubectl")
-        if not kubectl_path:
-            raise KubernetesAPIError("系统中未找到 kubectl，暂时无法执行 Pod Exec。", status_code=500)
 
         namespace_to_use = namespace or self.default_namespace
         permission_matrix = self.check_resource_permissions(
@@ -1337,7 +1405,7 @@ class KubernetesClient:
                 status_code=403,
                 details=exec_permission,
             )
-        return namespace_to_use, kubectl_path
+        return namespace_to_use
 
     def _expected_api_version(self, group: str, version: str) -> str:
         return version if not group else f"{group}/{version}"
