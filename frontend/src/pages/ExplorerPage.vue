@@ -69,6 +69,8 @@ const watchError = ref('')
 const watchCursor = ref('')
 const watchSyncMessage = ref('')
 const selectedTerminalContainer = ref('')
+const terminalContainerMenuOpen = ref(false)
+const terminalContainerMenuRef = ref<HTMLElement | null>(null)
 const terminalSession = ref<TerminalSessionResponse | null>(null)
 const terminalOutput = ref('')
 const terminalError = ref('')
@@ -357,6 +359,7 @@ const selectedNamespaceOrDefault = computed(
 )
 
 const containerOptions = computed(() => extractContainerNames(selectedDetail.value?.object ?? null))
+const selectedTerminalContainerLabel = computed(() => selectedTerminalContainer.value || '自动选择')
 const formEditableFields = computed(() => {
   const results: Array<{ path: string; type: string; required: boolean; description: string }> = []
 
@@ -1288,11 +1291,39 @@ function closeYamlDialog() {
 }
 
 function handleGlobalKeydown(event: KeyboardEvent) {
-  if (event.key !== 'Escape' || !yamlDialogOpen.value) {
+  if (event.key === 'Escape') {
+    if (terminalContainerMenuOpen.value) {
+      terminalContainerMenuOpen.value = false
+      event.preventDefault()
+      return
+    }
+    if (yamlDialogOpen.value) {
+      event.preventDefault()
+      closeYamlDialog()
+    }
+  }
+}
+
+function handleDocumentPointerdown(event: PointerEvent) {
+  const target = event.target
+  if (!(target instanceof Node)) {
     return
   }
-  event.preventDefault()
-  closeYamlDialog()
+  if (!terminalContainerMenuRef.value?.contains(target)) {
+    terminalContainerMenuOpen.value = false
+  }
+}
+
+function toggleTerminalContainerMenu() {
+  if (!containerOptions.value.length || !canOpenTerminal.value) {
+    return
+  }
+  terminalContainerMenuOpen.value = !terminalContainerMenuOpen.value
+}
+
+function selectTerminalContainer(container: string) {
+  selectedTerminalContainer.value = container
+  terminalContainerMenuOpen.value = false
 }
 
 function openPodLogsInNewTab() {
@@ -1557,6 +1588,7 @@ function stopLogFollowing() {
 
 onMounted(async () => {
   document.addEventListener('keydown', handleGlobalKeydown)
+  document.addEventListener('pointerdown', handleDocumentPointerdown)
   if (!clusterStore.items.length) {
     await clusterStore.fetchClusters()
   }
@@ -1565,6 +1597,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   document.removeEventListener('keydown', handleGlobalKeydown)
+  document.removeEventListener('pointerdown', handleDocumentPointerdown)
   stopLogFollowing()
   resetTerminalState()
   clearDetailRefreshTimer()
@@ -1586,6 +1619,12 @@ watch(selectedGroupKey, () => {
 
 watch(resourceSearchKeyword, () => {
   resourcePage.value = 1
+})
+
+watch([containerOptions, canOpenTerminal], ([containers, enabled]) => {
+  if (!enabled || !containers.length) {
+    terminalContainerMenuOpen.value = false
+  }
 })
 
 watch(resourcePageSize, () => {
@@ -1959,14 +1998,44 @@ watch(
             <section class="pod-quick-group">
               <h3 class="pod-quick-group-title">终端配置</h3>
               <div class="toolbar-grid pod-quick-toolbar pod-quick-toolbar-terminal">
-                <label class="field-label">
-                  终端容器
-                  <select v-model="selectedTerminalContainer" :disabled="!containerOptions.length || !canOpenTerminal">
-                    <option value="">自动选择</option>
-                    <option v-for="container in containerOptions" :key="`terminal:${container}`" :value="container">
-                      {{ container }}
-                    </option>
-                  </select>
+                <label class="field-label pod-quick-terminal-field">
+                  <span>终端容器</span>
+                  <div
+                    ref="terminalContainerMenuRef"
+                    class="pod-quick-dropdown"
+                    :class="{ 'pod-quick-dropdown-open': terminalContainerMenuOpen }"
+                  >
+                    <button
+                      type="button"
+                      class="pod-quick-dropdown-trigger"
+                      :disabled="!containerOptions.length || !canOpenTerminal"
+                      @click="toggleTerminalContainerMenu"
+                    >
+                      <span class="pod-quick-dropdown-value">{{ selectedTerminalContainerLabel }}</span>
+                      <span class="pod-quick-dropdown-caret" aria-hidden="true"></span>
+                    </button>
+
+                    <div v-if="terminalContainerMenuOpen" class="pod-quick-dropdown-menu">
+                      <button
+                        type="button"
+                        class="pod-quick-dropdown-option"
+                        :class="{ 'pod-quick-dropdown-option-active': !selectedTerminalContainer }"
+                        @click="selectTerminalContainer('')"
+                      >
+                        自动选择
+                      </button>
+                      <button
+                        v-for="container in containerOptions"
+                        :key="`terminal:${container}`"
+                        type="button"
+                        class="pod-quick-dropdown-option"
+                        :class="{ 'pod-quick-dropdown-option-active': selectedTerminalContainer === container }"
+                        @click="selectTerminalContainer(container)"
+                      >
+                        {{ container }}
+                      </button>
+                    </div>
+                  </div>
                 </label>
 
                 <label class="field-label">
