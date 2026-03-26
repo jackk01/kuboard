@@ -10,20 +10,32 @@ const sessionStore = useSessionStore()
 const sidebarCollapsed = ref(false)
 
 const navItems = [
-  { label: '总览', to: { name: 'dashboard' } },
-  { label: '集群', to: { name: 'clusters' } },
-  { label: '资源', to: { name: 'explorer' } },
-  { label: '审计', to: { name: 'audit' } },
-  { label: '设置', to: { name: 'settings' } },
+  { label: '总览', short: '总', description: '平台运行态与快捷入口', to: { name: 'dashboard' } },
+  { label: '集群', short: '集', description: '集群接入、状态与健康检查', to: { name: 'clusters' } },
+  { label: '资源', short: '资', description: '工作负载与资源浏览操作', to: { name: 'explorer' } },
+  { label: '审计', short: '审', description: '事件筛选、追踪与详情查看', to: { name: 'audit' } },
+  { label: '设置', short: '设', description: '账号、映射与系统配置', to: { name: 'settings' } },
 ]
 
 const pageTitle = computed(() => {
   return (route.meta.title as string | undefined) || navItems.find((item) => item.to.name === route.name)?.label || 'Kuboard'
 })
 
+const pageDescription = computed(() => {
+  return (
+    (route.meta.description as string | undefined) ||
+    navItems.find((item) => item.to.name === route.name)?.description ||
+    '多集群工作台'
+  )
+})
+
 const userInitial = computed(() => {
   const value = sessionStore.displayName?.trim() || sessionStore.currentUser?.email?.trim() || 'U'
   return value.slice(0, 1).toUpperCase()
+})
+
+const userDisplayName = computed(() => {
+  return sessionStore.displayName?.trim() || sessionStore.currentUser?.email?.trim() || '当前用户'
 })
 
 function toggleSidebar() {
@@ -74,16 +86,22 @@ watch(sidebarCollapsed, (value) => {
           :to="item.to"
           :title="sidebarCollapsed ? item.label : undefined"
         >
-          <span class="nav-link-badge">{{ item.label.slice(0, 1) }}</span>
-          <span class="nav-link-text">{{ item.label }}</span>
+          <span class="nav-link-badge">{{ item.short }}</span>
+          <span class="nav-link-content">
+            <span class="nav-link-text">{{ item.label }}</span>
+            <span class="nav-link-description">{{ item.description }}</span>
+          </span>
         </RouterLink>
       </nav>
 
-      <div class="sidebar-card sidebar-user-card" :title="sidebarCollapsed ? sessionStore.displayName || sessionStore.currentUser?.email || '当前用户' : undefined">
+      <div
+        class="sidebar-card sidebar-user-card"
+        :title="sidebarCollapsed ? userDisplayName : undefined"
+      >
         <div class="sidebar-user-avatar">{{ userInitial }}</div>
         <div v-if="!sidebarCollapsed" class="sidebar-user-meta">
           <div class="helper-text">当前用户</div>
-          <strong>{{ sessionStore.displayName }}</strong>
+          <strong>{{ userDisplayName }}</strong>
           <span class="muted">{{ sessionStore.currentUser?.email || '--' }}</span>
         </div>
       </div>
@@ -91,15 +109,23 @@ watch(sidebarCollapsed, (value) => {
 
     <main class="shell-main">
       <header class="shell-topbar">
-        <div>
-          <div class="helper-text">Kuboard / {{ pageTitle }}</div>
+        <div class="shell-topbar-main">
+          <div class="eyebrow shell-topbar-eyebrow">Kuboard Workspace</div>
           <h1 class="page-title">{{ pageTitle }}</h1>
+          <p class="page-description shell-topbar-description">{{ pageDescription }}</p>
         </div>
         <div class="shell-top-actions">
-          <button class="button button-secondary shell-collapse-button" style="padding: 8px 14px" @click="toggleSidebar">
+          <div class="user-chip shell-user-chip">
+            <span class="shell-user-avatar">{{ userInitial }}</span>
+            <span class="shell-user-meta-inline">
+              <strong>{{ userDisplayName }}</strong>
+              <span>{{ sessionStore.currentUser?.email || '--' }}</span>
+            </span>
+          </div>
+          <button class="button button-secondary shell-topbar-button shell-collapse-button" @click="toggleSidebar">
             {{ sidebarCollapsed ? '展开菜单' : '折叠菜单' }}
           </button>
-          <button class="button button-secondary" style="padding: 8px 14px" @click="handleLogout">退出登录</button>
+          <button class="button button-secondary shell-topbar-button" @click="handleLogout">退出登录</button>
         </div>
       </header>
 
