@@ -1363,6 +1363,7 @@ textarea {
   min-width: 52px;
   min-height: 34px;
   padding: 7px 12px;
+  border-radius: 12px;
   line-height: 1;
 }
 
@@ -1537,7 +1538,7 @@ textarea {
 
 .pod-quick-header {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 18px;
 }
@@ -1608,16 +1609,20 @@ textarea {
 }
 
 .pod-quick-toolbar-terminal {
-  grid-template-columns: minmax(0, 1.2fr) repeat(2, minmax(120px, 0.5fr));
+  align-items: start;
+  grid-template-columns: minmax(0, 1.2fr) repeat(2, minmax(96px, 0.6fr));
 }
 
+.pod-quick-toolbar-terminal > .field-label,
 .pod-quick-terminal-field {
+  min-width: 0;
   gap: 10px;
 }
 
 .pod-quick-dropdown {
   position: relative;
   display: block;
+  min-width: 0;
 }
 
 .pod-quick-dropdown-trigger {
@@ -1626,6 +1631,7 @@ textarea {
   justify-content: space-between;
   gap: 12px;
   width: 100%;
+  min-width: 0;
   padding: 11px 14px;
   border: 1px solid rgba(46, 80, 133, 0.18);
   border-radius: 10px;
@@ -1749,6 +1755,7 @@ textarea {
 .pod-quick-toolbar-terminal .field-label input[type='number'] {
   appearance: textfield;
   -moz-appearance: textfield;
+  min-width: 0;
   padding-right: 13px;
 }
 
@@ -2091,6 +2098,12 @@ textarea {
     grid-template-columns: 1fr;
   }
 
+  .pod-quick-actions {
+    width: 100%;
+    min-width: 0;
+    grid-template-columns: 1fr;
+  }
+
   .button {
     width: 100%;
   }
@@ -2135,10 +2148,10 @@ textarea {
   --kb-success: #1fa971;
   --kb-shadow: 0 20px 50px rgba(15, 35, 58, 0.08);
   --kb-shadow-soft: 0 12px 30px rgba(15, 35, 58, 0.06);
-  --kb-radius-xl: 28px;
-  --kb-radius-lg: 22px;
-  --kb-radius-md: 16px;
-  --kb-radius-sm: 12px;
+  --kb-radius-xl: 22px;
+  --kb-radius-lg: 18px;
+  --kb-radius-md: 12px;
+  --kb-radius-sm: 10px;
 }
 
 html {
@@ -2288,7 +2301,7 @@ textarea:focus-visible {
 .app-shell {
   position: relative;
   min-height: 100vh;
-  padding: 20px;
+  padding: 10px 20px 20px 0;
   gap: 20px;
   grid-template-columns: 280px minmax(0, 1fr);
 }
@@ -2333,11 +2346,11 @@ textarea:focus-visible {
 
 .shell-sidebar {
   position: sticky;
-  top: 20px;
-  min-height: calc(100vh - 40px);
+  top: 10px;
+  min-height: calc(100vh - 30px);
   padding: 22px 16px;
   border: 1px solid rgba(206, 220, 235, 0.22);
-  border-radius: 30px;
+  border-radius: 22px;
   background:
     radial-gradient(circle at top right, rgba(118, 186, 255, 0.28), transparent 24%),
     radial-gradient(circle at 20% 18%, rgba(144, 206, 255, 0.12), transparent 28%),
@@ -2358,7 +2371,7 @@ textarea:focus-visible {
 .brand-mark {
   width: 46px;
   height: 46px;
-  border-radius: 16px;
+  border-radius: 12px;
   border-color: rgba(255, 255, 255, 0.14);
   background:
     linear-gradient(135deg, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0.08)),
@@ -2386,7 +2399,7 @@ textarea:focus-visible {
   gap: 14px;
   padding: 14px;
   border: 1px solid transparent;
-  border-radius: 18px;
+  border-radius: 14px;
   color: rgba(238, 245, 255, 0.76);
 }
 
@@ -2412,7 +2425,7 @@ textarea:focus-visible {
   min-width: 34px;
   width: 34px;
   height: 34px;
-  border-radius: 12px;
+  border-radius: 10px;
   border-color: rgba(255, 255, 255, 0.12);
   background: rgba(255, 255, 255, 0.08);
   font-size: 10px;
@@ -2448,7 +2461,7 @@ textarea:focus-visible {
 }
 
 .sidebar-card {
-  border-radius: 22px;
+  border-radius: 16px;
   border-color: rgba(255, 255, 255, 0.16);
   background: rgba(255, 255, 255, 0.12);
   backdrop-filter: blur(10px);
@@ -2461,7 +2474,7 @@ textarea:focus-visible {
   justify-content: center;
   width: 38px;
   height: 38px;
-  border-radius: 14px;
+  border-radius: 10px;
   font-weight: 800;
 }
 
@@ -2476,13 +2489,11 @@ textarea:focus-visible {
 }
 
 .shell-topbar {
-  position: sticky;
-  top: 20px;
   z-index: 4;
   margin-bottom: 22px;
   padding: 18px 22px;
   border: 1px solid rgba(216, 227, 236, 0.9);
-  border-radius: 26px;
+  border-radius: 18px;
   background: rgba(255, 255, 255, 0.72);
   backdrop-filter: blur(20px);
   box-shadow: 0 16px 36px rgba(15, 35, 58, 0.08);
@@ -2514,7 +2525,7 @@ textarea:focus-visible {
 
 .user-chip {
   padding: 8px 10px;
-  border-radius: 18px;
+  border-radius: 14px;
   border-color: rgba(216, 227, 236, 0.92);
   background: rgba(255, 255, 255, 0.9);
   box-shadow: 0 10px 24px rgba(15, 35, 58, 0.06);
@@ -2563,7 +2574,7 @@ textarea:focus-visible {
 .auth-card {
   width: 100%;
   padding: 30px;
-  border-radius: 30px;
+  border-radius: 22px;
   border: 1px solid rgba(216, 227, 236, 0.9);
   background: rgba(255, 255, 255, 0.86);
   backdrop-filter: blur(20px);
@@ -2581,7 +2592,7 @@ textarea:focus-visible {
 .permission-card,
 .log-panel,
 .yaml-dialog {
-  border-radius: 28px;
+  border-radius: 20px;
   border-color: rgba(216, 227, 236, 0.88);
   box-shadow: var(--kb-shadow-soft);
 }
@@ -2838,6 +2849,8 @@ textarea:focus-visible {
 
 .explorer-quick-tab-active,
 .explorer-quick-btn-active {
+  color: #fff;
+  border-color: transparent;
   background: linear-gradient(135deg, var(--kb-primary), #3f9bff);
   box-shadow: 0 14px 28px rgba(22, 119, 255, 0.2);
 }
@@ -2863,17 +2876,39 @@ textarea:focus-visible {
   color: var(--kb-primary-deep);
 }
 
-.explorer-detail-actions {
+.explorer-detail-actions,
+.pod-quick-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  width: min(100%, 360px);
+  min-width: 0;
+  gap: 10px;
+  flex: 0 0 auto;
   padding: 8px;
+  border: 1px solid rgba(22, 119, 255, 0.1);
   border-radius: 18px;
-  border-color: rgba(22, 119, 255, 0.1);
-  background: rgba(248, 251, 254, 0.94);
-  box-shadow: none;
+  background: linear-gradient(180deg, rgba(248, 251, 254, 0.94), rgba(241, 246, 252, 0.92));
+  box-shadow: 0 12px 24px rgba(15, 35, 58, 0.05);
 }
 
 .explorer-detail-action,
-.explorer-pagination-button {
+.pod-quick-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-width: 0;
   border-radius: 12px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.explorer-detail-action,
+.pod-quick-action {
+  min-height: 44px;
+  padding: 10px 16px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
 }
 
 .empty-state {
@@ -2990,7 +3025,7 @@ textarea:focus-visible {
 
 @media (max-width: 1080px) {
   .app-shell {
-    padding: 14px;
+    padding: 8px 14px 14px 0;
     gap: 14px;
   }
 
@@ -3012,7 +3047,7 @@ textarea:focus-visible {
 
 @media (max-width: 720px) {
   .app-shell {
-    padding: 12px;
+    padding: 6px 12px 12px 0;
   }
 
   .shell-sidebar,
@@ -3021,7 +3056,7 @@ textarea:focus-visible {
   .surface-card,
   .auth-card,
   .auth-showcase {
-    border-radius: 24px;
+    border-radius: 18px;
   }
 
   .shell-topbar {
