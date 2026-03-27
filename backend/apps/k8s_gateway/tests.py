@@ -1,5 +1,6 @@
 from unittest.mock import MagicMock, patch
 
+import yaml
 from django.test import TestCase
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
@@ -247,6 +248,60 @@ current-context: demo
                 )
 
         self.assertIn("Pod Exec 执行超时", str(context.exception))
+
+    def test_serialize_resource_detail_returns_compact_yaml(self):
+        client = self.create_service_client()
+        descriptor = ResourceDescriptor(
+            group="",
+            version="v1",
+            name="configmaps",
+            kind="ConfigMap",
+            namespaced=True,
+            verbs=["get", "list", "patch"],
+            short_names=["cm"],
+        )
+        payload = {
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "metadata": {
+                "name": "demo-config",
+                "namespace": "default",
+                "resourceVersion": "42",
+                "uid": "demo-uid",
+                "creationTimestamp": "2026-03-27T08:00:00Z",
+                "managedFields": [{"manager": "kube-controller-manager"}],
+                "annotations": {
+                    "kubectl.kubernetes.io/last-applied-configuration": '{"apiVersion":"v1"}',
+                    "example.com/display": "keep-me",
+                },
+                "labels": {"app": "demo"},
+            },
+            "data": {
+                "app.yaml": "enabled: true\n",
+            },
+            "status": {"phase": "Active"},
+        }
+
+        detail = client._serialize_resource_detail(
+            descriptor=descriptor,
+            group="",
+            version="v1",
+            resource="configmaps",
+            payload=payload,
+            namespace="default",
+        )
+
+        compact_yaml = yaml.safe_load(detail["yaml"])
+        self.assertEqual(detail["object"], payload)
+        self.assertNotIn("status", compact_yaml)
+        self.assertEqual(compact_yaml["metadata"]["name"], "demo-config")
+        self.assertEqual(compact_yaml["metadata"]["namespace"], "default")
+        self.assertEqual(compact_yaml["metadata"]["labels"], {"app": "demo"})
+        self.assertEqual(compact_yaml["metadata"]["annotations"], {"example.com/display": "keep-me"})
+        self.assertNotIn("resourceVersion", compact_yaml["metadata"])
+        self.assertNotIn("uid", compact_yaml["metadata"])
+        self.assertNotIn("managedFields", compact_yaml["metadata"])
+        self.assertNotIn("creationTimestamp", compact_yaml["metadata"])
 
 
 class KubernetesGatewayAPITests(TestCase):

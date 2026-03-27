@@ -17,6 +17,7 @@ class StreamSessionCloseSerializer(serializers.Serializer):
 
 class StreamSessionOutputQuerySerializer(serializers.Serializer):
     cursor = serializers.IntegerField(required=False, min_value=0, default=0)
+    wait_ms = serializers.IntegerField(required=False, min_value=0, max_value=2000, default=0)
 
 
 class StreamSessionInputSerializer(serializers.Serializer):
@@ -109,9 +110,14 @@ class StreamSessionOutputView(APIView):
         if not getattr(request.user, "is_staff", False) and not getattr(request.user, "is_superuser", False):
             queryset = queryset.filter(owner=request.user)
         session = get_object_or_404(queryset, pk=pk, stream_type="terminal")
+        wait_timeout = serializer.validated_data["wait_ms"] / 1000.0
 
         try:
-            payload = terminal_hub.read_output(session_id=session.id, cursor=serializer.validated_data["cursor"])
+            payload = terminal_hub.read_output(
+                session_id=session.id,
+                cursor=serializer.validated_data["cursor"],
+                wait_timeout=wait_timeout,
+            )
         except TerminalSessionError as exc:
             if exc.status_code == 404 and session.closed_at:
                 return Response(

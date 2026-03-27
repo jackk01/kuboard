@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import base64
+from bisect import bisect_right
 import json
 import os
 import select
 import ssl
 import tempfile
 import threading
+import time
 from dataclasses import dataclass, field
 
 import yaml
@@ -269,12 +271,17 @@ class TerminalHandle:
     namespace: str
     container_name: str
     chunks: list[TerminalChunk] = field(default_factory=list)
+    chunk_ends: list[int] = field(default_factory=list)
     cursor: int = 0
     status: str = "running"
     exit_code: int | None = None
     output_excerpt: str = ""
     closed: bool = False
-    lock: threading.Lock = field(default_factory=threading.Lock)
+    lock: threading.RLock = field(default_factory=threading.RLock)
+    updated: threading.Condition = field(init=False)
+
+    def __post_init__(self):
+        self.updated = threading.Condition(self.lock)
 
 
 class TerminalHub:
@@ -293,19 +300,22 @@ class TerminalHub:
     def _store_chunk(self, handle: TerminalHandle, text: str):
         if not text:
             return
-        with handle.lock:
+        with handle.updated:
             start = handle.cursor
             handle.cursor += len(text)
             handle.chunks.append(TerminalChunk(start=start, end=handle.cursor, text=text))
+            handle.chunk_ends.append(handle.cursor)
             handle.output_excerpt = self._append_excerpt(handle.output_excerpt, text)
+            handle.updated.notify_all()
 
     def _finalize_session(self, handle: TerminalHandle, *, status: str, exit_code: int | None):
-        with handle.lock:
+        with handle.updated:
             if handle.closed:
                 return
             handle.closed = True
             handle.status = status
             handle.exit_code = exit_code
+            handle.updated.notify_all()
 
         StreamSession.objects.filter(pk=handle.session_id).update(
             status=status,
@@ -405,14 +415,20 @@ class TerminalHub:
             raise TerminalSessionError("终端会话不存在或已结束。", status_code=404)
         return handle
 
-    def read_output(self, *, session_id: int, cursor: int = 0) -> dict[str, object]:
+    def read_output(self, *, session_id: int, cursor: int = 0, wait_timeout: float = 0.0) -> dict[str, object]:
         handle = self._get_handle(session_id)
-        with handle.lock:
+        deadline = time.monotonic() + max(wait_timeout, 0.0)
+        with handle.updated:
+            while wait_timeout > 0 and cursor >= handle.cursor and not handle.closed:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                handle.updated.wait(timeout=remaining)
+
             next_cursor = handle.cursor
+            start_index = bisect_right(handle.chunk_ends, cursor)
             chunks: list[str] = []
-            for chunk in handle.chunks:
-                if chunk.end <= cursor:
-                    continue
+            for chunk in handle.chunks[start_index:]:
                 if cursor > chunk.start:
                     chunks.append(chunk.text[cursor - chunk.start :])
                 else:

@@ -2008,8 +2008,8 @@ watch(
             <section class="pod-quick-group">
               <h3 class="pod-quick-group-title">日志配置</h3>
               <div class="toolbar-grid pod-quick-toolbar pod-quick-toolbar-logs">
-                <label class="field-label">
-                  日志容器
+                <label class="field-label pod-quick-field">
+                  <span class="pod-quick-field-label">日志容器</span>
                   <select v-model="selectedLogContainer" :disabled="!containerOptions.length || !canViewPodLogs">
                     <option value="">自动选择</option>
                     <option v-for="container in containerOptions" :key="container" :value="container">
@@ -2018,8 +2018,8 @@ watch(
                   </select>
                 </label>
 
-                <label class="field-label">
-                  初始日志行数
+                <label class="field-label pod-quick-field">
+                  <span class="pod-quick-field-label">初始日志行数</span>
                   <input v-model.number="logTailLines" type="number" min="10" max="2000" :disabled="!canViewPodLogs" />
                 </label>
               </div>
@@ -2034,8 +2034,8 @@ watch(
             <section class="pod-quick-group">
               <h3 class="pod-quick-group-title">终端配置</h3>
               <div class="toolbar-grid pod-quick-toolbar pod-quick-toolbar-terminal">
-                <label class="field-label pod-quick-terminal-field">
-                  <span>终端容器</span>
+                <label class="field-label pod-quick-field pod-quick-terminal-field">
+                  <span class="pod-quick-field-label">终端容器</span>
                   <div
                     ref="terminalContainerMenuRef"
                     class="pod-quick-dropdown"
@@ -2074,13 +2074,13 @@ watch(
                   </div>
                 </label>
 
-                <label class="field-label">
-                  终端行数
+                <label class="field-label pod-quick-field">
+                  <span class="pod-quick-field-label">终端行数</span>
                   <input v-model.number="terminalRows" type="number" min="12" max="120" :disabled="!canOpenTerminal" />
                 </label>
 
-                <label class="field-label">
-                  终端列数
+                <label class="field-label pod-quick-field">
+                  <span class="pod-quick-field-label">终端列数</span>
                   <input v-model.number="terminalCols" type="number" min="40" max="240" :disabled="!canOpenTerminal" />
                 </label>
               </div>
@@ -2106,7 +2106,7 @@ watch(
                 isCreating
                   ? '当前是新建草稿，可以直接编辑 YAML 或 JSON 后执行 Create。'
                   : canEditYaml
-                    ? '这里支持查看并编辑当前资源的 YAML 内容。'
+                    ? '这里支持查看并编辑当前资源的 YAML 内容，已自动隐藏 status、managedFields 等系统字段。'
                     : '当前资源仅支持只读查看 YAML。'
               }}
             </p>

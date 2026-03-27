@@ -67,6 +67,19 @@ def build_resource_path(
 
 class KubernetesClient:
     LOG_TIMESTAMP_RE = re.compile(r"^(?P<timestamp>\S+)\s")
+    COMPACT_METADATA_FIELDS = {
+        "creationTimestamp",
+        "deletionGracePeriodSeconds",
+        "deletionTimestamp",
+        "generation",
+        "managedFields",
+        "resourceVersion",
+        "selfLink",
+        "uid",
+    }
+    COMPACT_METADATA_ANNOTATIONS = {
+        "kubectl.kubernetes.io/last-applied-configuration",
+    }
 
     def __init__(self, cluster: Cluster, actor=None):
         self.cluster = cluster
@@ -1311,6 +1324,7 @@ class KubernetesClient:
         namespace: str | None,
     ) -> dict[str, Any]:
         metadata = payload.get("metadata") or {}
+        compact_payload = self._build_compact_manifest(payload)
         return {
             "resource": {
                 "group": group or "core",
@@ -1322,7 +1336,7 @@ class KubernetesClient:
                 "verbs": descriptor.verbs,
             },
             "object": payload,
-            "yaml": yaml.safe_dump(payload, sort_keys=False, allow_unicode=True),
+            "yaml": yaml.safe_dump(compact_payload, sort_keys=False, allow_unicode=True),
             "metadata": {
                 "name": metadata.get("name", ""),
                 "namespace": metadata.get("namespace", ""),
@@ -1331,6 +1345,29 @@ class KubernetesClient:
                 "generation": metadata.get("generation"),
             },
         }
+
+    def _build_compact_manifest(self, payload: dict[str, Any]) -> dict[str, Any]:
+        compact_payload = deepcopy(payload)
+        compact_payload.pop("status", None)
+
+        metadata = compact_payload.get("metadata")
+        if isinstance(metadata, dict):
+            for field in self.COMPACT_METADATA_FIELDS:
+                metadata.pop(field, None)
+
+            annotations = metadata.get("annotations")
+            if isinstance(annotations, dict):
+                filtered_annotations = {
+                    key: value
+                    for key, value in annotations.items()
+                    if key not in self.COMPACT_METADATA_ANNOTATIONS
+                }
+                if filtered_annotations:
+                    metadata["annotations"] = filtered_annotations
+                else:
+                    metadata.pop("annotations", None)
+
+        return compact_payload
 
     def _build_pod_exec_stream(
         self,

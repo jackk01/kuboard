@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import threading
 from datetime import timedelta
 
 from django.test import TestCase, TransactionTestCase
@@ -13,7 +14,7 @@ from apps.clusters.models import Cluster
 from apps.iam.models import User
 
 from .models import StreamSession
-from .terminal import KubernetesExecWebSocket, terminal_hub
+from .terminal import KubernetesExecWebSocket, TerminalHandle, terminal_hub
 
 
 class FakeExecConnection:
@@ -167,11 +168,11 @@ class StreamSessionAPITests(TestCase):
             "closed_at": None,
         }
 
-        response = self.user_client.get(f"/api/v1/streams/sessions/{session.id}/output?cursor=0")
+        response = self.user_client.get(f"/api/v1/streams/sessions/{session.id}/output?cursor=0&wait_ms=1000")
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["text"], "demo output")
-        terminal_hub.read_output.assert_called_once_with(session_id=session.id, cursor=0)
+        terminal_hub.read_output.assert_called_once_with(session_id=session.id, cursor=0, wait_timeout=1.0)
 
     @patch("apps.streams.api.terminal_hub")
     def test_owner_can_send_terminal_input(self, terminal_hub):
@@ -321,3 +322,29 @@ class TerminalHubTests(TransactionTestCase):
         self.assertEqual(session.status, "error")
         self.assertEqual(session.exit_code, 127)
         self.assertIn("no such file or directory", session.output_excerpt)
+
+    def test_read_output_waits_for_new_chunk(self):
+        session = self.create_terminal_session()
+        handle = TerminalHandle(
+            session_id=session.id,
+            connection=FakeExecConnection(linger=True),
+            shell="/bin/sh",
+            namespace="default",
+            container_name="demo",
+        )
+        with terminal_hub._lock:
+            terminal_hub._sessions[session.id] = handle
+
+        def emit_output():
+            time.sleep(0.05)
+            terminal_hub._store_chunk(handle, "ready from pod\n")
+
+        threading.Thread(target=emit_output, daemon=True).start()
+
+        started_at = time.monotonic()
+        output = terminal_hub.read_output(session_id=session.id, cursor=0, wait_timeout=0.3)
+        elapsed = time.monotonic() - started_at
+
+        self.assertIn("ready from pod", output["text"])
+        self.assertEqual(output["cursor"], len("ready from pod\n"))
+        self.assertGreaterEqual(elapsed, 0.04)
