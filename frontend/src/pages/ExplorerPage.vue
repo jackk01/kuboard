@@ -923,6 +923,38 @@ function formatAge(timestamp?: string) {
   return `${Math.floor(diffHours / 24)}d`
 }
 
+function resolveServiceType(item: Record<string, any>) {
+  const spec = item?.spec ?? {}
+  return spec.type || 'ClusterIP'
+}
+
+function resolveServicePorts(item: Record<string, any>) {
+  const spec = item?.spec ?? {}
+  const ports = spec.ports ?? []
+  if (!ports.length) {
+    return '--'
+  }
+  return ports
+    .map((port: Record<string, any>) => {
+      const portNumber = port.port
+      const targetPort = port.targetPort
+      const protocol = port.protocol || 'TCP'
+      const nodePort = port.nodePort
+      if (nodePort) {
+        return `${portNumber}:${nodePort}/${protocol}`
+      }
+      if (targetPort && targetPort !== portNumber) {
+        return `${portNumber}->${targetPort}/${protocol}`
+      }
+      return `${portNumber}/${protocol}`
+    })
+    .join(', ')
+}
+
+function isServiceResource() {
+  return selectedGroup.value?.group === 'core' && selectedResourceName.value === 'services'
+}
+
 async function loadDiscovery(options: { preserveSelection?: boolean; resetState?: boolean; preferredNamespace?: string } = {}) {
   if (!selectedClusterId.value) {
     return
@@ -1816,6 +1848,8 @@ watch(
                   <span class="explorer-sort-indicator">{{ resourceSortIndicator('namespace') }}</span>
                 </button>
               </th>
+              <th v-if="isServiceResource()">类型</th>
+              <th v-if="isServiceResource()">端口</th>
               <th>
                 <button type="button" class="explorer-sort-button" @click="toggleResourceSort('status')">
                   Status
@@ -1846,6 +1880,8 @@ watch(
                 <strong>{{ resolveResourceName(item) || '--' }}</strong>
               </td>
               <td>{{ item.metadata?.namespace || '--' }}</td>
+              <td v-if="isServiceResource()">{{ resolveServiceType(item) }}</td>
+              <td v-if="isServiceResource()">{{ resolveServicePorts(item) }}</td>
               <td>{{ summarizeStatus(item) }}</td>
               <td>{{ formatAge(item.metadata?.creationTimestamp) }}</td>
             </tr>
