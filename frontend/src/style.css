@@ -2849,6 +2849,12 @@ textarea:focus-visible {
   background: rgba(255, 255, 255, 0.9);
 }
 
+.explorer-quick-btn.explorer-quick-btn-active {
+  border-color: transparent;
+  background: linear-gradient(135deg, var(--kb-primary), #3f9bff);
+  box-shadow: 0 14px 28px rgba(22, 119, 255, 0.2);
+}
+
 .explorer-quick-icon {
   min-width: 34px;
   height: 24px;
