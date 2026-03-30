@@ -29,6 +29,10 @@ const pageDescription = computed(() => {
   )
 })
 
+const shellTopbarVariant = computed(() => String(route.meta.shellTopbarVariant || 'default'))
+const showShellTopbarEyebrow = computed(() => route.meta.shellTopbarEyebrow !== false)
+const shellViewportLock = computed(() => route.meta.shellViewportLock === true)
+
 const userDisplayName = computed(() => {
   return sessionStore.displayName?.trim() || sessionStore.currentUser?.email?.trim() || '当前用户'
 })
@@ -95,10 +99,10 @@ watch(sidebarCollapsed, (value) => {
       </div>
     </aside>
 
-    <main class="shell-main">
-      <header class="shell-topbar">
+    <main class="shell-main" :class="{ 'shell-main-viewport-lock': shellViewportLock }">
+      <header class="shell-topbar" :class="{ 'shell-topbar-compact': shellTopbarVariant === 'compact' }">
         <div class="shell-topbar-main">
-          <div class="eyebrow shell-topbar-eyebrow">Kuboard Workspace</div>
+          <div v-if="showShellTopbarEyebrow" class="eyebrow shell-topbar-eyebrow">Kuboard Workspace</div>
           <h1 class="page-title">{{ pageTitle }}</h1>
           <p class="page-description shell-topbar-description">{{ pageDescription }}</p>
         </div>

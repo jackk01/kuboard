@@ -29,12 +29,65 @@ const namespace = computed(() => String(route.query.namespace || 'default'))
 const initialContainer = computed(() => String(route.query.container || ''))
 const selectedCluster = computed(() => clusterStore.items.find((cluster) => cluster.id === clusterId.value) ?? null)
 const pageReady = computed(() => Boolean(clusterId.value && podName.value))
+const canExportLogs = computed(() => Boolean(pageReady.value && logsResponse.value))
+const podContextSummary = computed(
+  () => `${selectedCluster.value?.name || clusterId.value || '--'} / ${namespace.value || '--'} / ${podName.value || '--'}`,
+)
 
 function clearLogFollowTimer() {
   if (logFollowTimer !== null) {
     window.clearTimeout(logFollowTimer)
     logFollowTimer = null
   }
+}
+
+function sanitizeFilenamePart(value: string) {
+  const sanitized = value
+    .trim()
+    .replace(/[\\/:*?"<>|]+/g, '-')
+    .replace(/\s+/g, '_')
+    .replace(/\.+$/g, '')
+
+  return sanitized || 'unknown'
+}
+
+function buildLogExportFilename() {
+  const pad = (value: number) => String(value).padStart(2, '0')
+  const now = new Date()
+  const timestamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
+  const containerName = logsResponse.value?.container || selectedLogContainer.value || 'auto'
+
+  return [
+    selectedCluster.value?.name || clusterId.value || 'cluster',
+    namespace.value || 'default',
+    podName.value || 'pod',
+    containerName,
+    timestamp,
+  ]
+    .map(sanitizeFilenamePart)
+    .join('__')
+}
+
+function exportLogs() {
+  if (!logsResponse.value) {
+    return
+  }
+
+  const blob = new Blob([logsResponse.value.text || ''], { type: 'text/plain;charset=utf-8' })
+  const downloadUrl = window.URL.createObjectURL(blob)
+  const anchor = window.document.createElement('a')
+
+  anchor.href = downloadUrl
+  anchor.download = `${buildLogExportFilename()}.log`
+  anchor.style.display = 'none'
+
+  window.document.body.appendChild(anchor)
+  anchor.click()
+
+  window.setTimeout(() => {
+    anchor.remove()
+    window.URL.revokeObjectURL(downloadUrl)
+  }, 0)
 }
 
 async function closeStreamSession(sessionId: number, statusValue = 'stopped') {
@@ -241,60 +294,79 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="page-grid page-grid-fill">
-    <section class="hero-panel">
-      <div class="section-head">
+  <div class="page-grid page-grid-fill log-page-grid">
+    <section class="surface-card log-panel">
+      <div class="section-head log-panel-head">
         <div>
-          <div class="eyebrow" style="color: var(--kb-primary-deep)">Pod Logs</div>
-          <h2 class="page-title">Pod 日志</h2>
-          <p class="page-description">
-            新页签日志视图默认开启追踪模式，你可以随时暂停追踪或调整单次输出行数。
-          </p>
+          <p class="helper-text">{{ podContextSummary }}</p>
         </div>
         <div class="button-row">
           <button class="button button-secondary" :disabled="loadingLogs" @click="refreshLogs">
             {{ loadingLogs ? '读取中...' : '刷新日志' }}
           </button>
+          <button class="button button-secondary" :disabled="!canExportLogs" @click="exportLogs">导出日志</button>
           <button class="button button-primary" :disabled="!pageReady" @click="toggleFollowing">
             {{ logsFollowing ? '停止追踪' : '开始追踪' }}
           </button>
         </div>
       </div>
-
-      <div class="pill-row" style="margin-bottom: 12px">
-        <span class="pill">集群: {{ selectedCluster?.name || clusterId || '--' }}</span>
-        <span class="pill">Pod: {{ podName || '--' }}</span>
-        <span class="pill">名称空间: {{ namespace || '--' }}</span>
-        <span class="pill">状态: {{ logsFollowing ? 'following' : 'idle' }}</span>
-      </div>
-
-      <div class="toolbar-grid logs-toolbar">
-        <label class="field-label">
-          Container
-          <input v-model="selectedLogContainer" type="text" placeholder="留空则自动选择" />
-        </label>
-
-        <label class="field-label">
-          Tail Lines
-          <input v-model.number="logTailLines" type="number" min="10" max="2000" />
-        </label>
-      </div>
-
-      <div v-if="logsResponse || logFollowSession" class="pill-row" style="margin-top: 12px">
-        <span class="pill">Cursor: {{ logFollowCursor || logsResponse?.cursor.since_time || '--' }}</span>
-        <span class="pill">Lines: {{ logTailLines }}</span>
-        <span class="pill" v-if="logFollowSession">Session: #{{ logFollowSession.id }}</span>
-      </div>
-    </section>
-
-    <section class="surface-card log-panel">
       <div v-if="!pageReady" class="empty-state">缺少 Pod 日志所需的参数，无法加载日志。</div>
       <div v-else-if="logsError" class="error-text">{{ logsError }}</div>
       <div v-else-if="loadingLogs && !logsResponse" class="empty-state">正在读取日志...</div>
-      <div v-else-if="logsFollowing" class="helper-text" style="margin-bottom: 12px">
+      <div v-else-if="logsFollowing" class="helper-text log-follow-hint">
         正在持续追踪最新日志输出，你可以随时停止追踪并手动刷新。
       </div>
-      <pre v-if="logsResponse" ref="logBlockRef" class="json-block log-block">{{ logsResponse.text || '// 当前没有日志输出' }}</pre>
+      <div v-if="logsResponse" class="log-block-shell">
+        <pre ref="logBlockRef" class="json-block log-block">{{ logsResponse.text || '// 当前没有日志输出' }}</pre>
+      </div>
     </section>
   </div>
 </template>
+
+<style scoped>
+.log-page-grid {
+  height: 100%;
+  max-height: 100%;
+  min-height: 0;
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.log-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: 100%;
+  min-height: 0;
+  margin-top: 0;
+  padding: 18px 18px 0;
+  overflow: hidden;
+}
+
+.log-panel-head {
+  align-items: center;
+  margin-bottom: 2px;
+}
+
+.log-panel-head .helper-text,
+.log-follow-hint {
+  margin: 0;
+}
+
+.log-block-shell {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  border-radius: 0;
+  margin-bottom: -12px;
+}
+
+.log-block {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 0;
+  max-height: none;
+  border-radius: 0;
+}
+</style>

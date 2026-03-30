@@ -53,7 +53,13 @@ const router = createRouter({
           path: 'pod-logs',
           name: 'pod-logs',
           component: PodLogsPage,
-          meta: { title: 'Pod 日志' },
+          meta: {
+            title: 'Pod 日志',
+            description: '查看实时日志并导出当前内容',
+            shellTopbarVariant: 'compact',
+            shellTopbarEyebrow: false,
+            shellViewportLock: true,
+          },
         },
         {
           path: 'audit',

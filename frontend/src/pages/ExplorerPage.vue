@@ -24,6 +24,13 @@ const router = useRouter()
 type WatchEventItem = ResourceWatchResponse['events'][number] & { received_at: string }
 type ResourceSortKey = 'name' | 'namespace' | 'status' | 'age'
 
+const EXPLORER_SELECTION_STORAGE_KEY = 'kuboard.explorer.selection'
+
+interface ExplorerSelectionState {
+  clusterId: string
+  namespacesByCluster: Record<string, string>
+}
+
 const selectedClusterId = ref('')
 const selectedGroupKey = ref('')
 const selectedResourceName = ref('')
@@ -95,6 +102,78 @@ let logFollowLoopToken = 0
 let logFollowTimer: number | null = null
 let terminalLoopToken = 0
 let terminalPollTimer: number | null = null
+
+function createEmptyExplorerSelectionState(): ExplorerSelectionState {
+  return {
+    clusterId: '',
+    namespacesByCluster: {},
+  }
+}
+
+function readExplorerSelectionState(): ExplorerSelectionState {
+  if (typeof window === 'undefined') {
+    return createEmptyExplorerSelectionState()
+  }
+
+  const storedValue = window.localStorage.getItem(EXPLORER_SELECTION_STORAGE_KEY)
+  if (!storedValue) {
+    return createEmptyExplorerSelectionState()
+  }
+
+  try {
+    const parsed = JSON.parse(storedValue) as Partial<ExplorerSelectionState> | null
+    const namespacesByCluster = Object.fromEntries(
+      Object.entries(parsed?.namespacesByCluster ?? {}).filter(
+        ([clusterId, namespace]) => Boolean(clusterId) && typeof namespace === 'string' && Boolean(namespace),
+      ),
+    )
+    return {
+      clusterId: typeof parsed?.clusterId === 'string' ? parsed.clusterId : '',
+      namespacesByCluster,
+    }
+  } catch {
+    return createEmptyExplorerSelectionState()
+  }
+}
+
+function writeExplorerSelectionState(nextState: ExplorerSelectionState) {
+  if (typeof window === 'undefined') {
+    return
+  }
+  window.localStorage.setItem(EXPLORER_SELECTION_STORAGE_KEY, JSON.stringify(nextState))
+}
+
+function storeSelectedCluster(clusterId: string) {
+  if (!clusterId) {
+    return
+  }
+
+  const nextState = readExplorerSelectionState()
+  nextState.clusterId = clusterId
+  writeExplorerSelectionState(nextState)
+}
+
+function storeSelectedNamespace(clusterId: string, namespace: string) {
+  if (!clusterId || !namespace) {
+    return
+  }
+
+  const nextState = readExplorerSelectionState()
+  nextState.clusterId = clusterId
+  nextState.namespacesByCluster = {
+    ...nextState.namespacesByCluster,
+    [clusterId]: namespace,
+  }
+  writeExplorerSelectionState(nextState)
+}
+
+function resolveStoredNamespace(clusterId: string) {
+  if (!clusterId) {
+    return ''
+  }
+
+  return readExplorerSelectionState().namespacesByCluster[clusterId] || ''
+}
 
 const loadingDiscovery = ref(false)
 const loadingResources = ref(false)
@@ -1017,8 +1096,10 @@ async function loadDiscovery(options: { preserveSelection?: boolean; resetState?
     }
 
     if (selectedResource.value?.namespaced) {
+      const storedNamespace = resolveStoredNamespace(selectedClusterId.value)
       const nextNamespace =
         options.preferredNamespace ||
+        storedNamespace ||
         selectedNamespace.value ||
         payload.context.default_namespace ||
         payload.namespaces[0]?.name ||
@@ -1624,7 +1705,11 @@ onMounted(async () => {
   if (!clusterStore.items.length) {
     await clusterStore.fetchClusters()
   }
-  selectedClusterId.value = clusterStore.items[0]?.id ?? ''
+
+  const storedSelection = readExplorerSelectionState()
+  selectedClusterId.value = clusterStore.items.some((cluster) => cluster.id === storedSelection.clusterId)
+    ? storedSelection.clusterId
+    : clusterStore.items[0]?.id ?? ''
 })
 
 onBeforeUnmount(() => {
@@ -1640,7 +1725,15 @@ watch(selectedClusterId, async (value, oldValue) => {
   if (!value || value === oldValue) {
     return
   }
+  storeSelectedCluster(value)
   await loadDiscovery()
+})
+
+watch(selectedNamespace, (value) => {
+  if (!value || !selectedClusterId.value || !selectedResource.value?.namespaced) {
+    return
+  }
+  storeSelectedNamespace(selectedClusterId.value, value)
 })
 
 watch(selectedGroupKey, () => {

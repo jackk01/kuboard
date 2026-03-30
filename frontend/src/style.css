@@ -2530,6 +2530,16 @@ textarea:focus-visible {
   grid-template-rows: auto minmax(0, 1fr);
 }
 
+.shell-main-viewport-lock {
+  height: 100vh;
+  min-height: 100vh;
+  overflow: hidden;
+}
+
+.shell-main-viewport-lock > .page-grid-fill {
+  overflow: hidden;
+}
+
 .shell-topbar {
   z-index: 4;
   margin-bottom: 22px;
@@ -2563,6 +2573,20 @@ textarea:focus-visible {
 
 .shell-topbar-button {
   min-width: 110px;
+}
+
+.shell-topbar-compact {
+  margin-bottom: 14px;
+  padding: 14px 18px;
+}
+
+.shell-topbar-compact .page-title {
+  font-size: clamp(1.35rem, 1.75vw, 1.75rem);
+}
+
+.shell-topbar-compact .shell-topbar-description {
+  margin-top: 4px;
+  line-height: 1.55;
 }
 
 .user-chip {
