@@ -332,59 +332,10 @@ textarea {
   color: #fff;
 }
 
-.sidebar-toggle {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 34px;
-  height: 34px;
-  border: 1px solid rgba(255, 255, 255, 0.22);
-  border-radius: 12px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.14), rgba(255, 255, 255, 0.08));
-  color: #fff;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
-  transition: background 150ms ease, border-color 150ms ease, transform 150ms ease, box-shadow 150ms ease;
-}
-
-.sidebar-toggle:hover {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0.12));
-  border-color: rgba(255, 255, 255, 0.34);
-  box-shadow: 0 6px 16px rgba(18, 37, 71, 0.16);
-  transform: translateY(-1px);
-}
-
-.sidebar-toggle-icon {
-  width: 10px;
-  height: 10px;
-  border-top: 2px solid rgba(255, 255, 255, 0.92);
-  border-right: 2px solid rgba(255, 255, 255, 0.92);
-  transform: rotate(225deg);
-  transition: transform 150ms ease;
-}
-
-.sidebar-toggle-icon-collapsed {
-  transform: rotate(45deg);
-}
-
 .sidebar-user-card {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.sidebar-user-avatar {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
-  flex: 0 0 36px;
-  border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.28);
-  background: rgba(255, 255, 255, 0.16);
-  color: #fff;
-  font-size: 14px;
-  font-weight: 700;
+  display: grid;
+  gap: 4px;
+  border-radius: 16px;
 }
 
 .sidebar-user-meta {
@@ -426,17 +377,6 @@ textarea {
   display: none;
 }
 
-.shell-sidebar-collapsed .sidebar-user-card {
-  justify-content: center;
-  padding: 10px 8px;
-}
-
-.shell-sidebar-collapsed .sidebar-user-avatar {
-  width: 34px;
-  height: 34px;
-  flex-basis: 34px;
-}
-
 .shell-main {
   padding: 14px 16px 20px;
   background: var(--kb-bg);
@@ -458,10 +398,6 @@ textarea {
   display: flex;
   align-items: center;
   gap: 10px;
-}
-
-.shell-collapse-button {
-  white-space: nowrap;
 }
 
 .shell-quick-card {
@@ -1052,6 +988,7 @@ textarea {
   border: 1px solid var(--kb-border);
   border-radius: 8px;
   background: #fff;
+  height: 100%;
 }
 
 .audit-table th {
@@ -1075,6 +1012,7 @@ textarea {
   border-radius: 8px;
   background: #fff;
   padding: 14px;
+  height: 100%;
 }
 
 .audit-detail-grid {
@@ -1222,7 +1160,7 @@ textarea {
 
 .explorer-split {
   grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.05fr);
-  align-items: start;
+  align-items: stretch;
 }
 
 .explorer-split-pods-equal {
@@ -1237,6 +1175,7 @@ textarea {
 .explorer-list-panel,
 .explorer-detail-panel {
   border-radius: 8px;
+  height: 100%;
 }
 
 .explorer-list-summary {
@@ -1469,6 +1408,7 @@ textarea {
   display: grid;
   gap: 16px;
   grid-template-columns: minmax(0, 1fr) minmax(320px, 0.9fr);
+  align-items: stretch;
 }
 
 .editor-surface {
@@ -2125,10 +2065,6 @@ textarea {
     display: inline;
   }
 
-  .shell-sidebar-collapsed .sidebar-user-card {
-    justify-content: flex-start;
-    padding: 12px;
-  }
 }
 
 @media (max-width: 720px) {
@@ -2377,13 +2313,16 @@ textarea:focus-visible {
 
 .app-shell {
   position: relative;
+  --shell-sidebar-width: 280px;
+  --shell-column-gap: 20px;
   min-height: 100vh;
-  padding: 10px 20px 20px 0;
-  gap: 20px;
+  padding: 0 20px 20px 0;
+  gap: var(--shell-column-gap);
   grid-template-columns: 280px minmax(0, 1fr);
 }
 
 .app-shell-collapsed {
+  --shell-sidebar-width: 96px;
   grid-template-columns: 96px minmax(0, 1fr);
 }
 
@@ -2423,8 +2362,8 @@ textarea:focus-visible {
 
 .shell-sidebar {
   position: sticky;
-  top: 10px;
-  min-height: calc(100vh - 30px);
+  top: 0;
+  min-height: calc(100vh - 20px);
   padding: 22px 16px;
   border: 1px solid rgba(206, 220, 235, 0.22);
   border-radius: 22px;
@@ -2442,7 +2381,30 @@ textarea:focus-visible {
 
 .brand-row {
   margin-bottom: 18px;
+  justify-content: flex-start;
   gap: 12px;
+}
+
+.brand-toggle {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.brand-toggle:hover .brand-mark {
+  border-color: rgba(255, 255, 255, 0.24);
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.28), rgba(255, 255, 255, 0.1)),
+    rgba(255, 255, 255, 0.1);
+}
+
+.brand-toggle:focus-visible {
+  outline: 2px solid rgba(103, 232, 249, 0.72);
+  outline-offset: 6px;
 }
 
 .brand-mark {
@@ -2544,7 +2506,6 @@ textarea:focus-visible {
   backdrop-filter: blur(10px);
 }
 
-.sidebar-user-avatar,
 .shell-user-avatar {
   display: inline-flex;
   align-items: center;
@@ -2555,14 +2516,18 @@ textarea:focus-visible {
   font-weight: 800;
 }
 
-.sidebar-user-avatar {
-  border-color: rgba(255, 255, 255, 0.16);
-  background: linear-gradient(135deg, rgba(22, 119, 255, 0.28), rgba(14, 165, 164, 0.16));
+.shell-main {
+  padding: 0 4px 0 0;
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100vh - 20px);
+  background: transparent;
 }
 
-.shell-main {
-  padding: 0 4px 20px 0;
-  background: transparent;
+.shell-main > .page-grid-fill {
+  flex: 1 1 auto;
+  min-height: 0;
+  grid-template-rows: auto minmax(0, 1fr);
 }
 
 .shell-topbar {
@@ -3104,8 +3069,8 @@ textarea:focus-visible {
 
 @media (max-width: 1080px) {
   .app-shell {
-    padding: 8px 14px 14px 0;
-    gap: 14px;
+    --shell-column-gap: 14px;
+    padding: 0 14px 14px 0;
   }
 
   .shell-sidebar {
@@ -3116,17 +3081,19 @@ textarea:focus-visible {
 
   .shell-main {
     padding-right: 0;
+    min-height: 0;
   }
 
   .shell-topbar {
     position: relative;
     top: 0;
   }
+
 }
 
 @media (max-width: 720px) {
   .app-shell {
-    padding: 6px 12px 12px 0;
+    padding: 0 12px 12px 0;
   }
 
   .shell-sidebar,
@@ -3159,4 +3126,35 @@ textarea:focus-visible {
   .hero-panel {
     padding: 18px;
   }
+}
+
+.auth-card,
+.shell-sidebar,
+.shell-topbar,
+.hero-panel,
+.surface-card,
+.stat-card,
+.cluster-summary-card,
+.dashboard-panel,
+.dashboard-health-item,
+.event-item,
+.resource-item,
+.schema-item,
+.cluster-card,
+.cluster-import-panel,
+.cluster-edit-panel,
+.audit-detail-panel,
+.audit-detail-item,
+.explorer-quick-surface,
+.permission-card,
+.permission-chip,
+.log-panel,
+.pod-quick-panel,
+.pod-quick-group,
+.explorer-quick-group,
+.yaml-dialog,
+.empty-state,
+.cluster-overview-table-wrap,
+.audit-table-wrap {
+  border-radius: 0;
 }

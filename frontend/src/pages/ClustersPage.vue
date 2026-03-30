@@ -338,7 +338,7 @@ async function confirmDelete() {
 </script>
 
 <template>
-  <div class="page-grid">
+  <div class="page-grid page-grid-fill">
     <section class="hero-panel cluster-hero-panel">
       <div class="section-head">
         <div>
@@ -347,7 +347,7 @@ async function confirmDelete() {
         </div>
         <div class="button-row">
           <button class="button button-secondary" @click="clusterStore.fetchClusters">刷新列表</button>
-          <button class="button button-primary" :disabled="clusterStore.loading" @click="runBatchHealthCheck">批量健康检查</button>
+          <button class="button button-primary" :disabled="clusterStore.loading" @click="runBatchHealthCheck">批量检查</button>
         </div>
       </div>
 

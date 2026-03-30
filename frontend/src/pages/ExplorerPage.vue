@@ -1712,7 +1712,7 @@ watch(
 </script>
 
 <template>
-  <div class="page-grid">
+  <div class="page-grid page-grid-fill">
     <section class="hero-panel explorer-hero-panel">
       <div class="section-head">
         <div>

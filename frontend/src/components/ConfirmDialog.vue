@@ -52,7 +52,7 @@ const emit = defineEmits<{
 .dialog-card {
   width: min(440px, calc(100vw - 48px));
   padding: 28px;
-  border-radius: var(--kb-radius-xl, 24px);
+  border-radius: 0;
   background: var(--kb-surface-strong, #ffffff);
   box-shadow: 0 24px 64px rgba(16, 32, 51, 0.18);
 }

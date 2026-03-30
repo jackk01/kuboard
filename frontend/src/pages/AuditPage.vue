@@ -102,7 +102,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="page-grid">
+  <div class="page-grid page-grid-fill">
     <section class="hero-panel audit-hero-panel">
       <div class="section-head">
         <div>
