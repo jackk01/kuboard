@@ -1051,6 +1051,7 @@ textarea {
 
 .explorer-hero-panel {
   border-radius: 10px;
+  overflow: visible;
 }
 
 .explorer-summary-grid .cluster-summary-card {
@@ -1368,6 +1369,21 @@ textarea {
   display: grid;
   gap: 16px;
   grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.explorer-toolbar-dropdown-field {
+  min-width: 0;
+  gap: 10px;
+}
+
+.explorer-toolbar-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+  align-items: start;
+}
+
+.explorer-toolbar-grid .pod-quick-dropdown-menu {
+  max-height: min(320px, calc(100vh - 220px));
+  overflow-y: auto;
 }
 
 .tag {

@@ -75,6 +75,10 @@ const watchEvents = ref<WatchEventItem[]>([])
 const watchError = ref('')
 const watchCursor = ref('')
 const watchSyncMessage = ref('')
+const clusterMenuOpen = ref(false)
+const clusterMenuRef = ref<HTMLElement | null>(null)
+const namespaceMenuOpen = ref(false)
+const namespaceMenuRef = ref<HTMLElement | null>(null)
 const selectedTerminalContainer = ref('')
 const terminalContainerMenuOpen = ref(false)
 const terminalContainerMenuRef = ref<HTMLElement | null>(null)
@@ -93,6 +97,8 @@ const loadingLogs = ref(false)
 const logsFollowing = ref(false)
 const logFollowCursor = ref('')
 const logFollowSession = ref<StreamSessionSummary | null>(null)
+const logContainerMenuOpen = ref(false)
+const logContainerMenuRef = ref<HTMLElement | null>(null)
 const selectedLogContainer = ref('')
 const logTailLines = ref(200)
 let watchLoopToken = 0
@@ -432,12 +438,17 @@ const resourcePageEnd = computed(() =>
 )
 
 const namespaceOptions = computed(() => discovery.value?.namespaces ?? [])
+const selectedClusterLabel = computed(
+  () => clusterStore.items.find((cluster) => cluster.id === selectedClusterId.value)?.name || '请选择集群',
+)
+const selectedNamespaceLabel = computed(() => selectedNamespace.value || 'cluster-scoped')
 
 const selectedNamespaceOrDefault = computed(
   () => selectedItem.value?.metadata?.namespace || selectedNamespace.value || discovery.value?.context.default_namespace || 'default',
 )
 
 const containerOptions = computed(() => extractContainerNames(selectedDetail.value?.object ?? null))
+const selectedLogContainerLabel = computed(() => selectedLogContainer.value || '自动选择')
 const selectedTerminalContainerLabel = computed(() => selectedTerminalContainer.value || '自动选择')
 const formEditableFields = computed(() => {
   const results: Array<{ path: string; type: string; required: boolean; description: string }> = []
@@ -1403,10 +1414,17 @@ function closeYamlDialog() {
   yamlDialogOpen.value = false
 }
 
+function closeCustomDropdownMenus() {
+  clusterMenuOpen.value = false
+  namespaceMenuOpen.value = false
+  logContainerMenuOpen.value = false
+  terminalContainerMenuOpen.value = false
+}
+
 function handleGlobalKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape') {
-    if (terminalContainerMenuOpen.value) {
-      terminalContainerMenuOpen.value = false
+    if (clusterMenuOpen.value || namespaceMenuOpen.value || logContainerMenuOpen.value || terminalContainerMenuOpen.value) {
+      closeCustomDropdownMenus()
       event.preventDefault()
       return
     }
@@ -1422,16 +1440,66 @@ function handleDocumentPointerdown(event: PointerEvent) {
   if (!(target instanceof Node)) {
     return
   }
-  if (!terminalContainerMenuRef.value?.contains(target)) {
-    terminalContainerMenuOpen.value = false
+  if (
+    clusterMenuRef.value?.contains(target) ||
+    namespaceMenuRef.value?.contains(target) ||
+    logContainerMenuRef.value?.contains(target) ||
+    terminalContainerMenuRef.value?.contains(target)
+  ) {
+    return
   }
+  closeCustomDropdownMenus()
+}
+
+function toggleClusterMenu() {
+  if (!clusterStore.items.length) {
+    return
+  }
+  const nextOpen = !clusterMenuOpen.value
+  closeCustomDropdownMenus()
+  clusterMenuOpen.value = nextOpen
+}
+
+function selectCluster(clusterId: string) {
+  selectedClusterId.value = clusterId
+  clusterMenuOpen.value = false
+}
+
+function toggleNamespaceMenu() {
+  if (!selectedResource.value?.namespaced) {
+    return
+  }
+  const nextOpen = !namespaceMenuOpen.value
+  closeCustomDropdownMenus()
+  namespaceMenuOpen.value = nextOpen
+}
+
+function selectNamespace(namespace: string) {
+  selectedNamespace.value = namespace
+  namespaceMenuOpen.value = false
+}
+
+function toggleLogContainerMenu() {
+  if (!containerOptions.value.length || !canViewPodLogs.value) {
+    return
+  }
+  const nextOpen = !logContainerMenuOpen.value
+  closeCustomDropdownMenus()
+  logContainerMenuOpen.value = nextOpen
+}
+
+function selectLogContainer(container: string) {
+  selectedLogContainer.value = container
+  logContainerMenuOpen.value = false
 }
 
 function toggleTerminalContainerMenu() {
   if (!containerOptions.value.length || !canOpenTerminal.value) {
     return
   }
-  terminalContainerMenuOpen.value = !terminalContainerMenuOpen.value
+  const nextOpen = !terminalContainerMenuOpen.value
+  closeCustomDropdownMenus()
+  terminalContainerMenuOpen.value = nextOpen
 }
 
 function selectTerminalContainer(container: string) {
@@ -1746,9 +1814,33 @@ watch(resourceSearchKeyword, () => {
   resourcePage.value = 1
 })
 
+watch(
+  () => clusterStore.items.length,
+  (count) => {
+    if (!count) {
+      clusterMenuOpen.value = false
+    }
+  },
+)
+
+watch(
+  () => Boolean(selectedResource.value?.namespaced),
+  (enabled) => {
+    if (!enabled) {
+      namespaceMenuOpen.value = false
+    }
+  },
+)
+
 watch([containerOptions, canOpenTerminal], ([containers, enabled]) => {
   if (!enabled || !containers.length) {
     terminalContainerMenuOpen.value = false
+  }
+})
+
+watch([containerOptions, canViewPodLogs], ([containers, enabled]) => {
+  if (!enabled || !containers.length) {
+    logContainerMenuOpen.value = false
   }
 })
 
@@ -1818,25 +1910,81 @@ watch(
         <span class="helper-text">{{ loadingDiscovery ? '正在自动同步 Discovery...' : 'Discovery 自动同步已开启' }}</span>
       </div>
 
-      <div class="toolbar-grid">
-        <label class="field-label">
-          集群
-          <select v-model="selectedClusterId">
-            <option disabled value="">请选择集群</option>
-            <option v-for="cluster in clusterStore.items" :key="cluster.id" :value="cluster.id">
-              {{ cluster.name }}
-            </option>
-          </select>
+      <div class="toolbar-grid explorer-toolbar-grid">
+        <label class="field-label explorer-toolbar-dropdown-field">
+          <span class="pod-quick-field-label">集群</span>
+          <div
+            ref="clusterMenuRef"
+            class="pod-quick-dropdown"
+            :class="{ 'pod-quick-dropdown-open': clusterMenuOpen }"
+          >
+            <button
+              type="button"
+              class="pod-quick-dropdown-trigger"
+              :disabled="!clusterStore.items.length"
+              :aria-expanded="clusterMenuOpen"
+              aria-haspopup="menu"
+              @click="toggleClusterMenu"
+            >
+              <span class="pod-quick-dropdown-value">{{ selectedClusterLabel }}</span>
+              <span class="pod-quick-dropdown-caret" aria-hidden="true"></span>
+            </button>
+
+            <div v-if="clusterMenuOpen" class="pod-quick-dropdown-menu">
+              <button
+                v-for="cluster in clusterStore.items"
+                :key="cluster.id"
+                type="button"
+                class="pod-quick-dropdown-option"
+                :class="{ 'pod-quick-dropdown-option-active': selectedClusterId === cluster.id }"
+                @click="selectCluster(cluster.id)"
+              >
+                {{ cluster.name }}
+              </button>
+            </div>
+          </div>
         </label>
 
-        <label class="field-label">
-          名称空间
-          <select v-model="selectedNamespace" :disabled="!selectedResource?.namespaced">
-            <option value="">cluster-scoped</option>
-            <option v-for="namespace in namespaceOptions" :key="namespace.name" :value="namespace.name">
-              {{ namespace.name }}
-            </option>
-          </select>
+        <label class="field-label explorer-toolbar-dropdown-field">
+          <span class="pod-quick-field-label">名称空间</span>
+          <div
+            ref="namespaceMenuRef"
+            class="pod-quick-dropdown"
+            :class="{ 'pod-quick-dropdown-open': namespaceMenuOpen }"
+          >
+            <button
+              type="button"
+              class="pod-quick-dropdown-trigger"
+              :disabled="!selectedResource?.namespaced"
+              :aria-expanded="namespaceMenuOpen"
+              aria-haspopup="menu"
+              @click="toggleNamespaceMenu"
+            >
+              <span class="pod-quick-dropdown-value">{{ selectedNamespaceLabel }}</span>
+              <span class="pod-quick-dropdown-caret" aria-hidden="true"></span>
+            </button>
+
+            <div v-if="namespaceMenuOpen" class="pod-quick-dropdown-menu">
+              <button
+                type="button"
+                class="pod-quick-dropdown-option"
+                :class="{ 'pod-quick-dropdown-option-active': !selectedNamespace }"
+                @click="selectNamespace('')"
+              >
+                cluster-scoped
+              </button>
+              <button
+                v-for="namespace in namespaceOptions"
+                :key="namespace.name"
+                type="button"
+                class="pod-quick-dropdown-option"
+                :class="{ 'pod-quick-dropdown-option-active': selectedNamespace === namespace.name }"
+                @click="selectNamespace(namespace.name)"
+              >
+                {{ namespace.name }}
+              </button>
+            </div>
+          </div>
         </label>
       </div>
 
@@ -2103,12 +2251,44 @@ watch(
               <div class="toolbar-grid pod-quick-toolbar pod-quick-toolbar-logs">
                 <label class="field-label pod-quick-field">
                   <span class="pod-quick-field-label">日志容器</span>
-                  <select v-model="selectedLogContainer" :disabled="!containerOptions.length || !canViewPodLogs">
-                    <option value="">自动选择</option>
-                    <option v-for="container in containerOptions" :key="container" :value="container">
-                      {{ container }}
-                    </option>
-                  </select>
+                  <div
+                    ref="logContainerMenuRef"
+                    class="pod-quick-dropdown"
+                    :class="{ 'pod-quick-dropdown-open': logContainerMenuOpen }"
+                  >
+                    <button
+                      type="button"
+                      class="pod-quick-dropdown-trigger"
+                      :disabled="!containerOptions.length || !canViewPodLogs"
+                      :aria-expanded="logContainerMenuOpen"
+                      aria-haspopup="menu"
+                      @click="toggleLogContainerMenu"
+                    >
+                      <span class="pod-quick-dropdown-value">{{ selectedLogContainerLabel }}</span>
+                      <span class="pod-quick-dropdown-caret" aria-hidden="true"></span>
+                    </button>
+
+                    <div v-if="logContainerMenuOpen" class="pod-quick-dropdown-menu">
+                      <button
+                        type="button"
+                        class="pod-quick-dropdown-option"
+                        :class="{ 'pod-quick-dropdown-option-active': !selectedLogContainer }"
+                        @click="selectLogContainer('')"
+                      >
+                        自动选择
+                      </button>
+                      <button
+                        v-for="container in containerOptions"
+                        :key="`log:${container}`"
+                        type="button"
+                        class="pod-quick-dropdown-option"
+                        :class="{ 'pod-quick-dropdown-option-active': selectedLogContainer === container }"
+                        @click="selectLogContainer(container)"
+                      >
+                        {{ container }}
+                      </button>
+                    </div>
+                  </div>
                 </label>
 
                 <label class="field-label pod-quick-field">
@@ -2138,6 +2318,8 @@ watch(
                       type="button"
                       class="pod-quick-dropdown-trigger"
                       :disabled="!containerOptions.length || !canOpenTerminal"
+                      :aria-expanded="terminalContainerMenuOpen"
+                      aria-haspopup="menu"
                       @click="toggleTerminalContainerMenu"
                     >
                       <span class="pod-quick-dropdown-value">{{ selectedTerminalContainerLabel }}</span>
