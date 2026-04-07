@@ -1179,6 +1179,10 @@ textarea {
   height: 100%;
 }
 
+.explorer-list-panel {
+  overflow: visible;
+}
+
 .explorer-list-summary {
   margin-bottom: 12px;
 }
@@ -1189,6 +1193,10 @@ textarea {
 
 .explorer-list-panel .table th {
   white-space: nowrap;
+}
+
+.explorer-resource-name {
+  font-weight: 400;
 }
 
 .explorer-sort-button {
@@ -1246,20 +1254,24 @@ textarea {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 34px;
-  padding: 0 12px;
-  border: 1px solid rgba(46, 80, 133, 0.12);
-  border-radius: 999px;
-  background: rgba(233, 237, 243, 0.9);
-  color: var(--kb-text-soft);
-  font-size: 12px;
-  line-height: 34px;
+  min-height: 44px;
+  padding: 0 16px;
+  border: 1px solid rgba(23, 48, 71, 0.08);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--kb-text);
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1;
+  box-shadow: 0 6px 18px rgba(15, 35, 58, 0.05);
   white-space: nowrap;
 }
 
 .explorer-pagination-controls {
-  min-width: 88px;
+  min-width: 92px;
   margin-left: auto;
+  position: relative;
+  z-index: 2;
 }
 
 .explorer-page-size-field {
@@ -1267,30 +1279,50 @@ textarea {
   margin: 0;
 }
 
-.explorer-page-size-field select {
-  appearance: none;
-  -webkit-appearance: none;
-  height: 34px;
-  min-width: 72px;
-  padding: 6px 28px 6px 10px;
-  border: 1px solid rgba(46, 80, 133, 0.12);
-  border-radius: 999px;
-  background: rgba(233, 237, 243, 0.9);
-  background-image: linear-gradient(45deg, transparent 50%, rgba(144, 147, 153, 0.7) 50%),
-    linear-gradient(135deg, rgba(144, 147, 153, 0.7) 50%, transparent 50%);
-  background-position:
-    calc(100% - 15px) 14px,
-    calc(100% - 10px) 14px;
-  background-size: 5px 5px, 5px 5px;
-  background-repeat: no-repeat;
-  color: var(--kb-text-soft);
-  box-shadow: none;
+.explorer-page-size-field .pod-quick-dropdown {
+  min-width: 92px;
+}
+
+.explorer-page-size-field .pod-quick-dropdown-trigger {
+  min-height: 44px;
+  padding: 0 14px;
+  border-color: rgba(23, 48, 71, 0.08);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.78);
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1;
+  box-shadow: 0 6px 18px rgba(15, 35, 58, 0.05);
+}
+
+.explorer-page-size-field .pod-quick-dropdown-trigger:hover:not(:disabled) {
+  border-color: rgba(22, 119, 255, 0.18);
+  background: #ffffff;
+  box-shadow: 0 6px 18px rgba(15, 35, 58, 0.05);
+}
+
+.explorer-page-size-field .pod-quick-dropdown-open .pod-quick-dropdown-trigger {
+  border-radius: 14px;
+}
+
+.explorer-page-size-field .pod-quick-dropdown-value {
+  color: var(--kb-text);
+  font-weight: 400;
   text-align: center;
 }
 
-.explorer-page-size-field select:focus {
-  border-color: rgba(46, 80, 133, 0.2);
-  box-shadow: 0 0 0 3px rgba(46, 80, 133, 0.08);
+.explorer-page-size-field .pod-quick-dropdown-option,
+.explorer-page-size-field .pod-quick-dropdown-option-active {
+  font-weight: 400;
+}
+
+.explorer-page-size-field .pod-quick-dropdown-menu {
+  top: auto;
+  bottom: calc(100% + 8px);
+  right: 0;
+  left: auto;
+  min-width: 100%;
 }
 
 .explorer-pagination-actions {
@@ -1305,6 +1337,10 @@ textarea {
   padding: 7px 12px;
   border-radius: 12px;
   line-height: 1;
+}
+
+.explorer-pagination-actions .button.explorer-pagination-button {
+  font-weight: 400;
 }
 
 .explorer-detail-panel .section-head {
@@ -1374,6 +1410,28 @@ textarea {
 .explorer-toolbar-dropdown-field {
   min-width: 0;
   gap: 10px;
+}
+
+.explorer-toolbar-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  max-width: 100%;
+}
+
+.explorer-toolbar-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: rgba(35, 72, 131, 0.08);
+  color: var(--kb-primary-deep);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 20px;
 }
 
 .explorer-toolbar-grid {
@@ -2921,9 +2979,7 @@ textarea:focus-visible {
   gap: 10px;
 }
 
-.explorer-quick-tab,
-.explorer-pagination-pill,
-.explorer-page-size-field select {
+.explorer-quick-tab {
   border: 1px solid rgba(22, 119, 255, 0.1);
   background: rgba(248, 251, 254, 0.94);
   color: var(--kb-text-soft);

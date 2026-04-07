@@ -75,6 +75,8 @@ const watchEvents = ref<WatchEventItem[]>([])
 const watchError = ref('')
 const watchCursor = ref('')
 const watchSyncMessage = ref('')
+const resourcePageSizeMenuOpen = ref(false)
+const resourcePageSizeMenuRef = ref<HTMLElement | null>(null)
 const clusterMenuOpen = ref(false)
 const clusterMenuRef = ref<HTMLElement | null>(null)
 const namespaceMenuOpen = ref(false)
@@ -358,13 +360,6 @@ const unavailableCommonResources = computed(() =>
   commonResourceItems.value.filter((item) => !item.available).map((item) => `${item.labelZh}(${item.label})`),
 )
 
-const explorerSummary = computed(() => ({
-  groups: discovery.value?.groups.length ?? 0,
-  resources: resources.value.length,
-  namespaces: namespaceOptions.value.length,
-  listed: resourceList.value?.metadata.count ?? resourceList.value?.items.length ?? 0,
-}))
-
 const normalizedResourceSearchKeyword = computed(() =>
   normalizeSearchText(resourceSearchKeyword.value),
 )
@@ -438,6 +433,9 @@ const resourcePageEnd = computed(() =>
 )
 
 const namespaceOptions = computed(() => discovery.value?.namespaces ?? [])
+const clusterCount = computed(() => clusterStore.items.length)
+const namespaceCount = computed(() => namespaceOptions.value.length)
+const selectedResourcePageSizeLabel = computed(() => `${resourcePageSize.value} 条`)
 const selectedClusterLabel = computed(
   () => clusterStore.items.find((cluster) => cluster.id === selectedClusterId.value)?.name || '请选择集群',
 )
@@ -1415,6 +1413,7 @@ function closeYamlDialog() {
 }
 
 function closeCustomDropdownMenus() {
+  resourcePageSizeMenuOpen.value = false
   clusterMenuOpen.value = false
   namespaceMenuOpen.value = false
   logContainerMenuOpen.value = false
@@ -1423,7 +1422,13 @@ function closeCustomDropdownMenus() {
 
 function handleGlobalKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape') {
-    if (clusterMenuOpen.value || namespaceMenuOpen.value || logContainerMenuOpen.value || terminalContainerMenuOpen.value) {
+    if (
+      resourcePageSizeMenuOpen.value ||
+      clusterMenuOpen.value ||
+      namespaceMenuOpen.value ||
+      logContainerMenuOpen.value ||
+      terminalContainerMenuOpen.value
+    ) {
       closeCustomDropdownMenus()
       event.preventDefault()
       return
@@ -1441,6 +1446,7 @@ function handleDocumentPointerdown(event: PointerEvent) {
     return
   }
   if (
+    resourcePageSizeMenuRef.value?.contains(target) ||
     clusterMenuRef.value?.contains(target) ||
     namespaceMenuRef.value?.contains(target) ||
     logContainerMenuRef.value?.contains(target) ||
@@ -1449,6 +1455,17 @@ function handleDocumentPointerdown(event: PointerEvent) {
     return
   }
   closeCustomDropdownMenus()
+}
+
+function toggleResourcePageSizeMenu() {
+  const nextOpen = !resourcePageSizeMenuOpen.value
+  closeCustomDropdownMenus()
+  resourcePageSizeMenuOpen.value = nextOpen
+}
+
+function selectResourcePageSize(size: (typeof resourcePageSizeOptions)[number]) {
+  resourcePageSize.value = size
+  resourcePageSizeMenuOpen.value = false
 }
 
 function toggleClusterMenu() {
@@ -1912,7 +1929,10 @@ watch(
 
       <div class="toolbar-grid explorer-toolbar-grid">
         <label class="field-label explorer-toolbar-dropdown-field">
-          <span class="pod-quick-field-label">集群</span>
+          <span class="explorer-toolbar-label">
+            <span class="pod-quick-field-label">集群</span>
+            <span class="explorer-toolbar-count">{{ clusterCount }}</span>
+          </span>
           <div
             ref="clusterMenuRef"
             class="pod-quick-dropdown"
@@ -1946,7 +1966,10 @@ watch(
         </label>
 
         <label class="field-label explorer-toolbar-dropdown-field">
-          <span class="pod-quick-field-label">名称空间</span>
+          <span class="explorer-toolbar-label">
+            <span class="pod-quick-field-label">名称空间</span>
+            <span class="explorer-toolbar-count">{{ namespaceCount }}</span>
+          </span>
           <div
             ref="namespaceMenuRef"
             class="pod-quick-dropdown"
@@ -2024,13 +2047,6 @@ watch(
         <div v-if="unavailableCommonResources.length" class="helper-text" style="margin-top: 8px">
           当前集群未发现：{{ unavailableCommonResources.join('、') }}
         </div>
-      </div>
-
-      <div class="cluster-summary-grid explorer-summary-grid" style="margin-top: 12px">
-        <article class="cluster-summary-card">
-          <span>名称空间</span>
-          <strong class="is-pending">{{ explorerSummary.namespaces }}</strong>
-        </article>
       </div>
 
       <div v-if="discoveryError" class="error-text" style="margin-top: 14px">{{ discoveryError }}</div>
@@ -2118,7 +2134,7 @@ watch(
               style="cursor: pointer"
             >
               <td>
-                <strong>{{ resolveResourceName(item) || '--' }}</strong>
+                <span class="explorer-resource-name">{{ resolveResourceName(item) || '--' }}</span>
               </td>
               <td>{{ item.metadata?.namespace || '--' }}</td>
               <td v-if="isServiceResource()">{{ resolveServiceType(item) }}</td>
@@ -2134,11 +2150,35 @@ watch(
           </div>
           <div class="explorer-pagination-controls">
             <label class="field-label explorer-page-size-field">
-              <select v-model.number="resourcePageSize">
-                <option v-for="size in resourcePageSizeOptions" :key="size" :value="size">
-                  {{ size }}
-                </option>
-              </select>
+              <div
+                ref="resourcePageSizeMenuRef"
+                class="pod-quick-dropdown"
+                :class="{ 'pod-quick-dropdown-open': resourcePageSizeMenuOpen }"
+              >
+                <button
+                  type="button"
+                  class="pod-quick-dropdown-trigger"
+                  :aria-expanded="resourcePageSizeMenuOpen"
+                  aria-haspopup="menu"
+                  @click="toggleResourcePageSizeMenu"
+                >
+                  <span class="pod-quick-dropdown-value">{{ selectedResourcePageSizeLabel }}</span>
+                  <span class="pod-quick-dropdown-caret" aria-hidden="true"></span>
+                </button>
+
+                <div v-if="resourcePageSizeMenuOpen" class="pod-quick-dropdown-menu">
+                  <button
+                    v-for="size in resourcePageSizeOptions"
+                    :key="size"
+                    type="button"
+                    class="pod-quick-dropdown-option"
+                    :class="{ 'pod-quick-dropdown-option-active': resourcePageSize === size }"
+                    @click="selectResourcePageSize(size)"
+                  >
+                    {{ size }} 条
+                  </button>
+                </div>
+              </div>
             </label>
           </div>
           <div class="button-row explorer-pagination-actions">
