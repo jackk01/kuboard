@@ -1,4 +1,5 @@
 from unittest.mock import MagicMock, patch
+from urllib import error
 
 import yaml
 from django.test import TestCase
@@ -8,7 +9,7 @@ from rest_framework.test import APIClient
 from apps.clusters.models import Cluster, ClusterCapability, ClusterCredential, ClusterHealthStatus
 from apps.iam.models import User
 from apps.streams.models import StreamSession
-from .services import KubernetesAPIError, KubernetesClient, build_resource_path
+from .services import KubernetesAPIError, KubernetesClient, ResourceDescriptor, build_resource_path
 
 
 class FakeExecStreamConnection:
@@ -168,6 +169,159 @@ current-context: demo
         handlers = build_opener_mock.call_args.args
         self.assertEqual(type(handlers[0]).__name__, "ProxyHandler")
         self.assertEqual(getattr(handlers[0], "proxies", None), {})
+
+    def test_request_json_maps_urlerror_timeout_to_gateway_timeout(self):
+        client = self.create_service_client()
+        opener = MagicMock()
+        opener.open.side_effect = error.URLError(TimeoutError("timed out"))
+
+        with patch("apps.k8s_gateway.services.request.build_opener", return_value=opener):
+            with self.assertRaises(KubernetesAPIError) as context:
+                client.request_json("/version", timeout=12)
+
+        self.assertEqual(context.exception.status_code, 504)
+        self.assertEqual(
+            context.exception.details,
+            {"reason": "timed out", "timeout_seconds": 12},
+        )
+        self.assertEqual(str(context.exception), "连接集群超时: timed out")
+
+    def test_discover_best_effort_skips_timed_out_api_group(self):
+        client = self.create_service_client()
+
+        def request_json_side_effect(path, **kwargs):
+            if path == "/version":
+                return {"gitVersion": "v1.30.0"}
+            if path == "/api":
+                return {"versions": ["v1"]}
+            if path == "/apis":
+                return {
+                    "groups": [
+                        {"name": "apps", "preferredVersion": {"version": "v1"}},
+                        {"name": "metrics.k8s.io", "preferredVersion": {"version": "v1beta1"}},
+                    ]
+                }
+            if path == "/api/v1":
+                return {
+                    "resources": [
+                        {"name": "pods", "kind": "Pod", "namespaced": True, "verbs": ["get", "list"]},
+                        {"name": "pods/exec", "kind": "Pod", "namespaced": True, "verbs": ["create"]},
+                    ]
+                }
+            if path == "/apis/apps/v1":
+                return {
+                    "resources": [
+                        {"name": "deployments", "kind": "Deployment", "namespaced": True, "verbs": ["get", "list"]}
+                    ]
+                }
+            if path == "/apis/metrics.k8s.io/v1beta1":
+                raise KubernetesAPIError("连接集群超时: The read operation timed out", status_code=504)
+            if path == "/api/v1/namespaces":
+                self.assertEqual(kwargs.get("query"), {"limit": 200})
+                return {"items": [{"metadata": {"name": "default"}, "status": {"phase": "Active"}}]}
+            raise AssertionError(f"unexpected path: {path}")
+
+        with patch.object(client, "request_json", side_effect=request_json_side_effect):
+            discovery = client.discover(best_effort=True)
+
+        self.assertTrue(discovery["partial"])
+        self.assertEqual(len(discovery["warnings"]), 1)
+        self.assertEqual(discovery["warnings"][0]["group"], "metrics.k8s.io")
+        self.assertEqual(discovery["warnings"][0]["status_code"], 504)
+        self.assertEqual([group["group"] for group in discovery["groups"]], ["core", "apps"])
+        self.assertTrue(discovery["supports_exec"])
+        self.assertEqual(discovery["namespaces"][0]["name"], "default")
+
+    def test_check_resource_permissions_prefers_rules_review_for_pods(self):
+        client = self.create_service_client()
+        descriptor = ResourceDescriptor(
+            group="",
+            version="v1",
+            name="pods",
+            kind="Pod",
+            namespaced=True,
+            verbs=["get", "list", "watch", "create", "update", "patch", "delete"],
+            short_names=[],
+        )
+
+        with patch.object(client, "get_self_subject_rules", return_value={
+            "namespace": "default",
+            "incomplete": False,
+            "evaluation_error": "",
+            "resource_rules": [
+                {"verbs": ["get", "list", "watch"], "apiGroups": [""], "resources": ["pods"]},
+                {"verbs": ["patch", "update"], "apiGroups": [""], "resources": ["pods"], "resourceNames": ["demo-pod"]},
+                {"verbs": ["get"], "apiGroups": [""], "resources": ["pods/log"], "resourceNames": ["demo-pod"]},
+                {"verbs": ["create"], "apiGroups": [""], "resources": ["pods/exec"], "resourceNames": ["demo-pod"]},
+            ],
+            "non_resource_rules": [],
+        }) as rules_mock, patch.object(client, "_run_self_subject_access_review") as ssar_mock, patch.object(
+            client,
+            "get_resource_descriptor",
+            return_value=descriptor,
+        ):
+            payload = client.check_resource_permissions(
+                group="",
+                version="v1",
+                resource="pods",
+                namespace="default",
+                name="demo-pod",
+            )
+
+        self.assertTrue(payload["verbs"]["get"]["allowed"])
+        self.assertTrue(payload["verbs"]["patch"]["allowed"])
+        self.assertFalse(payload["verbs"]["delete"]["allowed"])
+        self.assertTrue(payload["subresources"]["log"]["allowed"])
+        self.assertTrue(payload["subresources"]["exec"]["allowed"])
+        rules_mock.assert_called_once_with(namespace="default")
+        ssar_mock.assert_not_called()
+
+    def test_check_resource_permissions_falls_back_to_access_review_when_rules_review_unsupported(self):
+        client = self.create_service_client()
+        descriptor = ResourceDescriptor(
+            group="",
+            version="v1",
+            name="pods",
+            kind="Pod",
+            namespaced=True,
+            verbs=["get", "list", "watch", "create", "update", "patch", "delete"],
+            short_names=[],
+        )
+
+        def ssar_side_effect(*, verb, subresource=None, **kwargs):
+            return {
+                "allowed": verb in {"get", "list"} or subresource == "log",
+                "denied": not (verb in {"get", "list"} or subresource == "log"),
+                "reason": "",
+                "evaluation_error": "",
+            }
+
+        with patch.object(
+            client,
+            "get_self_subject_rules",
+            side_effect=KubernetesAPIError("集群不支持 authorization.k8s.io 自审接口。", status_code=501),
+        ), patch.object(
+            client,
+            "_run_self_subject_access_review",
+            side_effect=ssar_side_effect,
+        ) as ssar_mock, patch.object(
+            client,
+            "get_resource_descriptor",
+            return_value=descriptor,
+        ):
+            payload = client.check_resource_permissions(
+                group="",
+                version="v1",
+                resource="pods",
+                namespace="default",
+                name="demo-pod",
+            )
+
+        self.assertTrue(payload["verbs"]["get"]["allowed"])
+        self.assertFalse(payload["verbs"]["patch"]["allowed"])
+        self.assertTrue(payload["subresources"]["log"]["allowed"])
+        self.assertFalse(payload["subresources"]["exec"]["allowed"])
+        self.assertEqual(ssar_mock.call_count, 9)
 
     def test_exec_pod_command_uses_stream_and_returns_output(self):
         client = self.create_service_client()
@@ -365,7 +519,47 @@ current-context: demo
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["version"]["gitVersion"], "v1.30.0")
+        mocked_client.discover.assert_called_once_with(best_effort=True)
         mocked_client.sync_capability_from_discovery.assert_called_once()
+
+    @patch("apps.k8s_gateway.api.KubernetesClient")
+    def test_discovery_endpoint_keeps_partial_success_when_api_group_times_out(self, client_class):
+        mocked_client = client_class.return_value
+        mocked_client.discover.return_value = {
+            "version": {"gitVersion": "v1.30.0"},
+            "context": {"name": "demo", "server": "https://127.0.0.1:6443", "default_namespace": "default"},
+            "groups": [
+                {
+                    "group": "core",
+                    "version": "v1",
+                    "preferred_version": "v1",
+                    "resources": [{"name": "pods", "kind": "Pod", "namespaced": True, "verbs": ["get", "list"]}],
+                }
+            ],
+            "namespaces": [{"name": "default", "phase": "Active"}],
+            "resource_index": {"core::v1::pods": {"name": "pods", "kind": "Pod", "namespaced": True, "verbs": ["get", "list"]}},
+            "warnings": [
+                {
+                    "group": "metrics.k8s.io",
+                    "version": "v1beta1",
+                    "path": "/apis/metrics.k8s.io/v1beta1",
+                    "message": "连接集群超时: timed out",
+                    "status_code": 504,
+                }
+            ],
+            "partial": True,
+        }
+
+        response = self.client.get(f"/api/v1/clusters/{self.cluster.id}/discovery")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["partial"])
+        mocked_client.discover.assert_called_once_with(best_effort=True)
+        self.cluster.refresh_from_db()
+        self.cluster.health.refresh_from_db()
+        self.assertEqual(self.cluster.status, ClusterStatus.READY)
+        self.assertEqual(self.cluster.health.status, ClusterHealthState.HEALTHY)
+        self.assertIn("跳过 1 个异常接口", self.cluster.health.message)
 
     @patch("apps.k8s_gateway.api.KubernetesClient")
     def test_resource_list_endpoint_returns_items(self, client_class):

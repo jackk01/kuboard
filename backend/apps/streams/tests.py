@@ -14,7 +14,7 @@ from apps.clusters.models import Cluster
 from apps.iam.models import User
 
 from .models import StreamSession
-from .terminal import KubernetesExecWebSocket, TerminalHandle, terminal_hub
+from .terminal import KubernetesExecWebSocket, TerminalHandle, build_terminal_shell_command, terminal_hub
 
 
 class FakeExecConnection:
@@ -59,6 +59,21 @@ class FakeExecConnection:
 
     def close(self):
         self.connected = False
+
+
+class TerminalShellTests(TestCase):
+    def test_build_auto_terminal_shell_command_prefers_bash_and_falls_back_to_sh(self):
+        self.assertEqual(
+            build_terminal_shell_command("auto"),
+            [
+                "/bin/sh",
+                "-lc",
+                "if command -v bash >/dev/null 2>&1; then exec bash; else exec sh; fi",
+            ],
+        )
+
+    def test_build_terminal_shell_command_preserves_explicit_shell(self):
+        self.assertEqual(build_terminal_shell_command("/bin/bash"), ["/bin/bash"])
 
 
 class StreamSessionAPITests(TestCase):

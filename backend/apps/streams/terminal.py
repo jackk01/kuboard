@@ -25,18 +25,32 @@ class TerminalSessionError(Exception):
 
 
 ALLOWED_TERMINAL_SHELLS = {
+    "auto": "auto",
     "sh": "/bin/sh",
     "/bin/sh": "/bin/sh",
     "bash": "/bin/bash",
     "/bin/bash": "/bin/bash",
 }
 
+AUTO_TERMINAL_SHELL_COMMAND = [
+    "/bin/sh",
+    "-lc",
+    "if command -v bash >/dev/null 2>&1; then exec bash; else exec sh; fi",
+]
+
 
 def normalize_terminal_shell(shell: str) -> str:
     normalized = ALLOWED_TERMINAL_SHELLS.get((shell or "/bin/sh").strip())
     if not normalized:
-        raise TerminalSessionError("当前终端仅允许 /bin/sh 或 /bin/bash。", status_code=400)
+        raise TerminalSessionError("当前终端仅允许 auto、/bin/sh 或 /bin/bash。", status_code=400)
     return normalized
+
+
+def build_terminal_shell_command(shell: str) -> list[str]:
+    normalized_shell = normalize_terminal_shell(shell)
+    if normalized_shell == "auto":
+        return list(AUTO_TERMINAL_SHELL_COMMAND)
+    return [normalized_shell]
 
 
 class KubernetesExecWebSocket:
@@ -395,7 +409,7 @@ class TerminalHub:
         thread.start()
 
         StreamSession.objects.filter(pk=session.id).update(
-            command=[normalized_shell],
+            command=build_terminal_shell_command(normalized_shell),
             namespace=namespace,
             container_name=container or "",
         )

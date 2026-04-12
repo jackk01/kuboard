@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import errno
 import json
 import os
 import re
@@ -66,6 +67,7 @@ def build_resource_path(
 
 
 class KubernetesClient:
+    AUTHORIZATION_REVIEW_TIMEOUT_SECONDS = 20
     LOG_TIMESTAMP_RE = re.compile(r"^(?P<timestamp>\S+)\s")
     COMPACT_METADATA_FIELDS = {
         "creationTimestamp",
@@ -189,6 +191,23 @@ class KubernetesClient:
         except FileNotFoundError:
             pass
 
+    @staticmethod
+    def _extract_timeout_reason(reason: Any) -> str | None:
+        if reason is None:
+            return None
+
+        message = str(reason).strip()
+        if isinstance(reason, TimeoutError):
+            return message or "timed out"
+
+        if isinstance(reason, OSError) and getattr(reason, "errno", None) == errno.ETIMEDOUT:
+            return message or "timed out"
+
+        lowered = message.lower()
+        if "timed out" in lowered or "timeout" in lowered or "time out" in lowered:
+            return message or "timed out"
+        return None
+
     def _request(
         self,
         path: str,
@@ -199,6 +218,7 @@ class KubernetesClient:
         content_type: str | None = None,
         accept: str = "application/json",
         expect_json: bool = True,
+        timeout: int = 10,
     ) -> Any:
         query_string = ""
         if query:
@@ -219,7 +239,7 @@ class KubernetesClient:
             self._apply_headers(req, headers)
 
             try:
-                with opener.open(req, timeout=10) as response:
+                with opener.open(req, timeout=timeout) as response:
                     payload = response.read().decode("utf-8")
                     if not payload:
                         return {} if expect_json else ""
@@ -236,6 +256,13 @@ class KubernetesClient:
                     message = response_body or str(exc)
                 raise KubernetesAPIError(message, status_code=exc.code, details=details) from exc
             except error.URLError as exc:
+                timeout_reason = self._extract_timeout_reason(exc.reason)
+                if timeout_reason:
+                    raise KubernetesAPIError(
+                        f"连接集群超时: {timeout_reason}",
+                        status_code=504,
+                        details={"reason": timeout_reason, "timeout_seconds": timeout},
+                    ) from exc
                 raise KubernetesAPIError(
                     f"连接集群失败: {exc.reason}",
                     status_code=502,
@@ -245,9 +272,16 @@ class KubernetesClient:
                 raise KubernetesAPIError(
                     f"连接集群超时: {exc}",
                     status_code=504,
-                    details={"reason": str(exc), "timeout_seconds": 10},
+                    details={"reason": str(exc), "timeout_seconds": timeout},
                 ) from exc
             except OSError as exc:
+                timeout_reason = self._extract_timeout_reason(exc)
+                if timeout_reason:
+                    raise KubernetesAPIError(
+                        f"连接集群超时: {timeout_reason}",
+                        status_code=504,
+                        details={"reason": timeout_reason, "timeout_seconds": timeout},
+                    ) from exc
                 raise KubernetesAPIError(
                     f"连接集群失败: {exc}",
                     status_code=502,
@@ -263,6 +297,7 @@ class KubernetesClient:
         body: bytes | None = None,
         content_type: str | None = None,
         accept: str = "application/json",
+        timeout: int = 10,
     ) -> dict[str, Any]:
         return self._request(
             path,
@@ -272,6 +307,7 @@ class KubernetesClient:
             content_type=content_type,
             accept=accept,
             expect_json=True,
+            timeout=timeout,
         )
 
     def request_text(
@@ -283,6 +319,7 @@ class KubernetesClient:
         body: bytes | None = None,
         content_type: str | None = None,
         accept: str = "text/plain, application/json",
+        timeout: int = 10,
     ) -> str:
         return self._request(
             path,
@@ -292,6 +329,7 @@ class KubernetesClient:
             content_type=content_type,
             accept=accept,
             expect_json=False,
+            timeout=timeout,
         )
 
     def request_json_lines(
@@ -349,6 +387,13 @@ class KubernetesClient:
                     message = response_body or str(exc)
                 raise KubernetesAPIError(message, status_code=exc.code, details=details) from exc
             except error.URLError as exc:
+                timeout_reason = self._extract_timeout_reason(exc.reason)
+                if timeout_reason:
+                    raise KubernetesAPIError(
+                        f"连接集群超时: {timeout_reason}",
+                        status_code=504,
+                        details={"reason": timeout_reason, "timeout_seconds": timeout},
+                    ) from exc
                 raise KubernetesAPIError(
                     f"连接集群失败: {exc.reason}",
                     status_code=502,
@@ -361,6 +406,13 @@ class KubernetesClient:
                     details={"reason": str(exc), "timeout_seconds": timeout},
                 ) from exc
             except OSError as exc:
+                timeout_reason = self._extract_timeout_reason(exc)
+                if timeout_reason:
+                    raise KubernetesAPIError(
+                        f"连接集群超时: {timeout_reason}",
+                        status_code=504,
+                        details={"reason": timeout_reason, "timeout_seconds": timeout},
+                    ) from exc
                 raise KubernetesAPIError(
                     f"连接集群失败: {exc}",
                     status_code=502,
@@ -376,17 +428,69 @@ class KubernetesClient:
             "latency_ms": latency_ms,
         }
 
-    def discover(self) -> dict[str, Any]:
-        version = self.request_json("/version")
+    @staticmethod
+    def _build_discovery_warning(
+        *,
+        group: str,
+        version: str,
+        path: str,
+        exc: KubernetesAPIError,
+    ) -> dict[str, Any]:
+        return {
+            "group": group or "core",
+            "version": version,
+            "path": path,
+            "message": str(exc),
+            "status_code": exc.status_code,
+        }
+
+    def _request_discovery_resource_list(
+        self,
+        *,
+        path: str,
+        group: str,
+        version: str,
+        warnings: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any] | None:
+        try:
+            return self.request_json(path)
+        except KubernetesAPIError as exc:
+            if warnings is None:
+                raise
+            warnings.append(
+                self._build_discovery_warning(
+                    group=group,
+                    version=version,
+                    path=path,
+                    exc=exc,
+                )
+            )
+            return None
+
+    def discover(
+        self,
+        *,
+        best_effort: bool = False,
+        version: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        version = version or self.request_json("/version")
         core_versions = self.request_json("/api")
         api_groups = self.request_json("/apis")
 
         groups = []
         resource_index = {}
         supports_exec = False
+        warnings: list[dict[str, Any]] = []
 
         for core_version in core_versions.get("versions", []):
-            resource_list = self.request_json(f"/api/{core_version}")
+            resource_list = self._request_discovery_resource_list(
+                path=f"/api/{core_version}",
+                group="core",
+                version=core_version,
+                warnings=warnings if best_effort else None,
+            )
+            if resource_list is None:
+                continue
             supports_exec = supports_exec or any(
                 item.get("name") == "pods/exec"
                 for item in resource_list.get("resources", [])
@@ -407,7 +511,14 @@ class KubernetesClient:
             if not preferred:
                 continue
             group_name = group_entry.get("name", "")
-            resource_list = self.request_json(f"/apis/{group_name}/{preferred}")
+            resource_list = self._request_discovery_resource_list(
+                path=f"/apis/{group_name}/{preferred}",
+                group=group_name,
+                version=preferred,
+                warnings=warnings if best_effort else None,
+            )
+            if resource_list is None:
+                continue
             resources = self._normalize_resources(group_name, preferred, resource_list)
             groups.append(
                 {
@@ -429,7 +540,16 @@ class KubernetesClient:
                 }
                 for item in namespace_payload.get("items", [])
             ]
-        except KubernetesAPIError:
+        except KubernetesAPIError as exc:
+            if best_effort:
+                warnings.append(
+                    self._build_discovery_warning(
+                        group="core",
+                        version="v1",
+                        path="/api/v1/namespaces",
+                        exc=exc,
+                    )
+                )
             namespaces = []
 
         return {
@@ -443,6 +563,8 @@ class KubernetesClient:
             "namespaces": namespaces,
             "resource_index": resource_index,
             "supports_exec": supports_exec,
+            "warnings": warnings,
+            "partial": bool(warnings),
         }
 
     def _normalize_resources(self, group: str, version: str, resource_list: dict[str, Any]) -> list[dict[str, Any]]:
@@ -496,6 +618,7 @@ class KubernetesClient:
                     method="POST",
                     body=json.dumps(payload).encode("utf-8"),
                     content_type="application/json",
+                    timeout=self.AUTHORIZATION_REVIEW_TIMEOUT_SECONDS,
                 )
             except KubernetesAPIError as exc:
                 if exc.status_code not in (404, 405, 406):
@@ -513,6 +636,118 @@ class KubernetesClient:
             status_code=501,
             details={"candidates": errors},
         )
+
+    @staticmethod
+    def _rule_matches_value(candidates: list[str], expected: str) -> bool:
+        return "*" in candidates or expected in candidates
+
+    @classmethod
+    def _rule_matches_resource(
+        cls,
+        rule_resources: list[str],
+        *,
+        resource: str,
+        subresource: str | None = None,
+    ) -> bool:
+        target = f"{resource}/{subresource}" if subresource else resource
+        for candidate in rule_resources:
+            if candidate == "*":
+                return True
+            if candidate == target:
+                return True
+            if subresource and candidate == f"{resource}/*":
+                return True
+        return False
+
+    @staticmethod
+    def _rule_matches_name(rule: dict[str, Any], *, name: str | None) -> bool:
+        resource_names = rule.get("resourceNames") or []
+        if not resource_names:
+            return True
+        if not name:
+            return False
+        return "*" in resource_names or name in resource_names
+
+    @classmethod
+    def _rule_grants_resource_access(
+        cls,
+        rule: dict[str, Any],
+        *,
+        verb: str,
+        group: str,
+        resource: str,
+        name: str | None = None,
+        subresource: str | None = None,
+    ) -> bool:
+        api_groups = rule.get("apiGroups") or [""]
+        resources = rule.get("resources") or []
+        verbs = rule.get("verbs") or []
+        return (
+            cls._rule_matches_value(api_groups, group)
+            and cls._rule_matches_resource(resources, resource=resource, subresource=subresource)
+            and cls._rule_matches_value(verbs, verb)
+            and cls._rule_matches_name(rule, name=name)
+        )
+
+    def _resolve_permissions_from_rules(
+        self,
+        *,
+        group: str,
+        version: str,
+        resource: str,
+        namespace: str | None,
+        name: str | None,
+    ) -> dict[str, Any]:
+        rules_payload = self.get_self_subject_rules(namespace=namespace)
+        incomplete = bool(rules_payload.get("incomplete"))
+        evaluation_error = rules_payload.get("evaluation_error", "")
+        resource_rules = rules_payload.get("resource_rules") or []
+
+        def review_for(verb: str, *, review_name: str | None = None, subresource: str | None = None) -> dict[str, Any]:
+            allowed = any(
+                self._rule_grants_resource_access(
+                    rule,
+                    verb=verb,
+                    group=group,
+                    resource=resource,
+                    name=review_name,
+                    subresource=subresource,
+                )
+                for rule in resource_rules
+            )
+            denied = not allowed and not incomplete and not evaluation_error
+            reason = ""
+            if not allowed:
+                if evaluation_error:
+                    reason = evaluation_error
+                elif incomplete:
+                    reason = "权限规则结果不完整，当前结果仅供参考。"
+                else:
+                    reason = "权限规则未授予该操作。"
+            return {
+                "allowed": allowed,
+                "denied": denied,
+                "reason": reason,
+                "evaluation_error": evaluation_error,
+            }
+
+        verbs = {}
+        for verb in ("get", "list", "watch", "create", "update", "patch", "delete"):
+            verbs[verb] = review_for(
+                verb,
+                review_name=name if verb not in ("list", "create") else None,
+            )
+
+        subresources = {}
+        if (group or "core") == "core" and resource == "pods":
+            subresources["log"] = review_for("get", review_name=name, subresource="log")
+            if self.capability.supports_exec:
+                subresources["exec"] = review_for("create", review_name=name, subresource="exec")
+
+        return {
+            "verbs": verbs,
+            "subresources": subresources,
+        }
 
     def _run_self_subject_access_review(
         self,
@@ -802,40 +1037,56 @@ class KubernetesClient:
     ) -> dict[str, Any]:
         descriptor = self.get_resource_descriptor(group, version, resource)
         namespace_to_use = namespace or (self.default_namespace if descriptor.namespaced else None)
-        verbs = {}
-
-        for verb in ("get", "list", "watch", "create", "update", "patch", "delete"):
-            review = self._run_self_subject_access_review(
-                verb=verb,
+        try:
+            permissions = self._resolve_permissions_from_rules(
                 group=group,
                 version=version,
                 resource=resource,
                 namespace=namespace_to_use if descriptor.namespaced else None,
-                name=name if verb not in ("list", "create") else None,
-            )
-            verbs[verb] = review
-
-        subresources = {}
-        if (group or "core") == "core" and resource == "pods":
-            subresources["log"] = self._run_self_subject_access_review(
-                verb="get",
-                group="",
-                version="v1",
-                resource="pods",
-                namespace=namespace_to_use,
                 name=name,
-                subresource="log",
             )
-            if self.capability.supports_exec:
-                subresources["exec"] = self._run_self_subject_access_review(
-                    verb="create",
+        except KubernetesAPIError as exc:
+            if exc.status_code != 501:
+                raise
+
+            verbs = {}
+            for verb in ("get", "list", "watch", "create", "update", "patch", "delete"):
+                review = self._run_self_subject_access_review(
+                    verb=verb,
+                    group=group,
+                    version=version,
+                    resource=resource,
+                    namespace=namespace_to_use if descriptor.namespaced else None,
+                    name=name if verb not in ("list", "create") else None,
+                )
+                verbs[verb] = review
+
+            subresources = {}
+            if (group or "core") == "core" and resource == "pods":
+                subresources["log"] = self._run_self_subject_access_review(
+                    verb="get",
                     group="",
                     version="v1",
                     resource="pods",
                     namespace=namespace_to_use,
                     name=name,
-                    subresource="exec",
+                    subresource="log",
                 )
+                if self.capability.supports_exec:
+                    subresources["exec"] = self._run_self_subject_access_review(
+                        verb="create",
+                        group="",
+                        version="v1",
+                        resource="pods",
+                        namespace=namespace_to_use,
+                        name=name,
+                        subresource="exec",
+                    )
+
+            permissions = {
+                "verbs": verbs,
+                "subresources": subresources,
+            }
 
         return {
             "resource": {
@@ -849,8 +1100,8 @@ class KubernetesClient:
                 "namespace": namespace_to_use if descriptor.namespaced else None,
                 "name": name or "",
             },
-            "verbs": verbs,
-            "subresources": subresources,
+            "verbs": permissions["verbs"],
+            "subresources": permissions["subresources"],
         }
 
     def list_resources(
@@ -1206,7 +1457,7 @@ class KubernetesClient:
         rows: int = 32,
         cols: int = 120,
     ) -> dict[str, Any]:
-        from apps.streams.terminal import TerminalSessionError, normalize_terminal_shell, terminal_hub
+        from apps.streams.terminal import TerminalSessionError, build_terminal_shell_command, normalize_terminal_shell, terminal_hub
 
         namespace_to_use = self._prepare_pod_exec(name=name, namespace=namespace)
         normalized_shell = normalize_terminal_shell(shell)
@@ -1217,7 +1468,7 @@ class KubernetesClient:
                     name=name,
                     namespace=namespace_to_use,
                     container=container,
-                    command=[normalized_shell],
+                    command=build_terminal_shell_command(normalized_shell),
                 ),
                 namespace=namespace_to_use,
                 container=container,

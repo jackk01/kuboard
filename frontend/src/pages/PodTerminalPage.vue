@@ -67,6 +67,7 @@ const clusterStore = useClusterStore()
 const TERMINAL_OUTPUT_WAIT_MS = 1000
 const TERMINAL_INPUT_BATCH_DELAY_MS = 16
 const TERMINAL_THEME_STORAGE_KEY = 'kuboard-terminal-theme'
+type TerminalShell = 'auto' | '/bin/sh' | '/bin/bash'
 const terminalThemePresets: TerminalThemePreset[] = [
   {
     id: 'graphite',
@@ -283,7 +284,7 @@ const terminalError = ref('')
 const terminalConnecting = ref(false)
 const terminalSending = ref(false)
 const terminalCursor = ref(0)
-const terminalShell = ref<'/bin/sh' | '/bin/bash'>('/bin/sh')
+const terminalShell = ref<TerminalShell>('auto')
 const terminalRows = ref(32)
 const terminalCols = ref(120)
 const terminalViewport = ref<HTMLElement | null>(null)
@@ -656,7 +657,7 @@ async function resizeTerminal() {
   }
 }
 
-async function switchShell(shell: '/bin/sh' | '/bin/bash') {
+async function switchShell(shell: TerminalShell) {
   terminalShell.value = shell
   await router.replace({
     name: 'pod-terminal',
@@ -681,8 +682,8 @@ watch(terminalThemeId, (nextThemeId) => {
 })
 
 onMounted(async () => {
-  const shell = String(route.query.shell || '/bin/sh')
-  terminalShell.value = shell === '/bin/bash' ? '/bin/bash' : '/bin/sh'
+  const shell = String(route.query.shell || 'auto')
+  terminalShell.value = shell === '/bin/bash' || shell === '/bin/sh' ? shell : 'auto'
 
   if (!clusterStore.items.length) {
     await clusterStore.fetchClusters()

@@ -29,7 +29,17 @@ const EXPLORER_SELECTION_STORAGE_KEY = 'kuboard.explorer.selection'
 interface ExplorerSelectionState {
   clusterId: string
   namespacesByCluster: Record<string, string>
+  resourcesByCluster: Record<
+    string,
+    {
+      groupKey: string
+      resourceName: string
+    }
+  >
 }
+
+type DeleteActionMode = 'delete' | 'restart'
+type TerminalShell = 'auto' | '/bin/sh' | '/bin/bash'
 
 const selectedClusterId = ref('')
 const selectedGroupKey = ref('')
@@ -68,6 +78,7 @@ const loadingSchema = ref(false)
 const applying = ref(false)
 const deleting = ref(false)
 const deleteDialogVisible = ref(false)
+const deleteActionMode = ref<DeleteActionMode>('delete')
 const pendingDeleteName = ref('')
 const watchActive = ref(false)
 const watchLoading = ref(false)
@@ -103,6 +114,8 @@ const logContainerMenuOpen = ref(false)
 const logContainerMenuRef = ref<HTMLElement | null>(null)
 const selectedLogContainer = ref('')
 const logTailLines = ref(200)
+const permissionCache = new Map<string, ResourcePermissionResponse>()
+const permissionRequestCache = new Map<string, Promise<ResourcePermissionResponse>>()
 let watchLoopToken = 0
 let watchTimer: number | null = null
 let detailRefreshTimer: number | null = null
@@ -115,6 +128,7 @@ function createEmptyExplorerSelectionState(): ExplorerSelectionState {
   return {
     clusterId: '',
     namespacesByCluster: {},
+    resourcesByCluster: {},
   }
 }
 
@@ -135,9 +149,19 @@ function readExplorerSelectionState(): ExplorerSelectionState {
         ([clusterId, namespace]) => Boolean(clusterId) && typeof namespace === 'string' && Boolean(namespace),
       ),
     )
+    const resourcesByCluster = Object.fromEntries(
+      Object.entries(parsed?.resourcesByCluster ?? {}).filter(([clusterId, selection]) => {
+        if (!clusterId || !selection || typeof selection !== 'object') {
+          return false
+        }
+        const resourceSelection = selection as { groupKey?: unknown; resourceName?: unknown }
+        return Boolean(resourceSelection.groupKey) && Boolean(resourceSelection.resourceName)
+      }),
+    ) as ExplorerSelectionState['resourcesByCluster']
     return {
       clusterId: typeof parsed?.clusterId === 'string' ? parsed.clusterId : '',
       namespacesByCluster,
+      resourcesByCluster,
     }
   } catch {
     return createEmptyExplorerSelectionState()
@@ -175,12 +199,41 @@ function storeSelectedNamespace(clusterId: string, namespace: string) {
   writeExplorerSelectionState(nextState)
 }
 
+function storeSelectedResourceSelection(clusterId: string, groupKey: string, resourceName: string) {
+  if (!clusterId || !groupKey || !resourceName) {
+    return
+  }
+
+  const nextState = readExplorerSelectionState()
+  nextState.clusterId = clusterId
+  nextState.resourcesByCluster = {
+    ...nextState.resourcesByCluster,
+    [clusterId]: {
+      groupKey,
+      resourceName,
+    },
+  }
+  writeExplorerSelectionState(nextState)
+}
+
 function resolveStoredNamespace(clusterId: string) {
   if (!clusterId) {
     return ''
   }
 
   return readExplorerSelectionState().namespacesByCluster[clusterId] || ''
+}
+
+function resolveStoredResourceSelection(clusterId: string) {
+  if (!clusterId) {
+    return { groupKey: '', resourceName: '' }
+  }
+
+  const selection = readExplorerSelectionState().resourcesByCluster[clusterId]
+  return {
+    groupKey: selection?.groupKey || '',
+    resourceName: selection?.resourceName || '',
+  }
 }
 
 const loadingDiscovery = ref(false)
@@ -522,12 +575,82 @@ const canViewPodLogs = computed(
         resourcePermissions.value?.subresources.log?.allowed,
     ),
 )
+const isDeploymentDetail = computed(
+  () => selectedDetail.value?.resource.group === 'apps' && selectedDetail.value?.resource.name === 'deployments',
+)
 const isPodResource = computed(
   () => selectedDetail.value?.resource.group === 'core' && selectedDetail.value?.resource.name === 'pods',
 )
 const isPodListResource = computed(
   () => selectedGroup.value?.group === 'core' && selectedResourceName.value === 'pods',
 )
+const selectedPodOwnerKind = computed(() => {
+  if (!isPodResource.value) {
+    return ''
+  }
+  const ownerKind = selectedDetail.value?.object?.metadata?.ownerReferences?.[0]?.kind
+  return typeof ownerKind === 'string' ? ownerKind : ''
+})
+const podRestartButtonLabel = computed(() => {
+  if (deleting.value && deleteActionMode.value === 'restart') {
+    return '重启中...'
+  }
+  return '重启'
+})
+const deleteDialogTitle = computed(() => (deleteActionMode.value === 'restart' ? '重启 Pod' : '删除资源'))
+const deleteDialogMessage = computed(() => {
+  if (!pendingDeleteName.value) {
+    return ''
+  }
+
+  if (deleteActionMode.value === 'restart') {
+    const ownerKind = selectedPodOwnerKind.value
+    const ownerHint = ownerKind
+      ? `系统检测到该 Pod 受 ${ownerKind} 管理，删除后通常会自动拉起新实例。`
+      : '如果该 Pod 不受 Deployment、StatefulSet、DaemonSet 或 Job 等控制器管理，删除后不会自动恢复。'
+    return `确认删除 Pod ${pendingDeleteName.value} 以触发重建吗？${ownerHint}`
+  }
+
+  return `确认删除资源 ${pendingDeleteName.value} 吗？该操作不可撤销。`
+})
+const deleteDialogConfirmText = computed(() => (deleteActionMode.value === 'restart' ? '删除并重建' : '删除'))
+const deploymentDesiredReplicas = computed(() => {
+  if (!isDeploymentDetail.value) {
+    return 0
+  }
+  const object = selectedDetail.value?.object ?? {}
+  const status = object.status ?? {}
+  return normalizeReplicaCount(object.spec?.replicas, normalizeReplicaCount(status.replicas, 1))
+})
+const deploymentReadyReplicas = computed(() => {
+  if (!isDeploymentDetail.value) {
+    return 0
+  }
+  return normalizeReplicaCount(selectedDetail.value?.object?.status?.readyReplicas, 0)
+})
+const deploymentScaleStatusLabel = computed(() => {
+  if (!isDeploymentDetail.value) {
+    return ''
+  }
+  if (applying.value) {
+    return '正在调整'
+  }
+  if (deploymentReadyReplicas.value === deploymentDesiredReplicas.value) {
+    return '全部就绪'
+  }
+  return `Ready ${deploymentReadyReplicas.value}/${deploymentDesiredReplicas.value}`
+})
+const deploymentScaleStatusClass = computed(() => {
+  if (!isDeploymentDetail.value) {
+    return ''
+  }
+  if (applying.value) {
+    return 'deployment-scale-status-pending'
+  }
+  return deploymentReadyReplicas.value === deploymentDesiredReplicas.value
+    ? 'deployment-scale-status-ready'
+    : 'deployment-scale-status-pending'
+})
 
 function extractContainerNames(object: Record<string, any> | null) {
   if (!object) {
@@ -635,6 +758,39 @@ function stopWatching(options: { keepEvents?: boolean } = {}) {
 
 function cloneObject<T>(value: T): T {
   return JSON.parse(JSON.stringify(value))
+}
+
+function buildCompactManifestForApply(object: Record<string, any> | null) {
+  const manifest = cloneObject(object ?? {})
+  delete manifest.status
+
+  const metadata = manifest.metadata
+  if (metadata && typeof metadata === 'object') {
+    const compactMetadataFields = [
+      'creationTimestamp',
+      'deletionGracePeriodSeconds',
+      'deletionTimestamp',
+      'generation',
+      'managedFields',
+      'resourceVersion',
+      'selfLink',
+      'uid',
+    ]
+
+    compactMetadataFields.forEach((field) => {
+      delete metadata[field]
+    })
+
+    const annotations = metadata.annotations
+    if (annotations && typeof annotations === 'object') {
+      delete annotations['kubectl.kubernetes.io/last-applied-configuration']
+      if (!Object.keys(annotations).length) {
+        delete metadata.annotations
+      }
+    }
+  }
+
+  return manifest
 }
 
 function activateCommonResource(item: {
@@ -971,6 +1127,109 @@ function normalizeReplicaCount(value: unknown, fallback = 0) {
   return Math.floor(parsed)
 }
 
+interface PodContainerStateValue {
+  reason?: string
+  signal?: number
+  exitCode?: number
+}
+
+interface PodContainerStatusValue {
+  ready?: boolean
+  restartCount?: number
+  state?: {
+    waiting?: PodContainerStateValue
+    terminated?: PodContainerStateValue
+    running?: Record<string, never>
+  }
+}
+
+function resolvePodContainerStatuses(item: Record<string, any>, key: string) {
+  const statuses = item.status?.[key]
+  return Array.isArray(statuses) ? (statuses as PodContainerStatusValue[]) : []
+}
+
+function resolvePodContainerTerminationReason(terminated?: PodContainerStateValue) {
+  if (!terminated) {
+    return ''
+  }
+  if (typeof terminated.reason === 'string' && terminated.reason) {
+    return terminated.reason
+  }
+  if (typeof terminated.signal === 'number' && terminated.signal > 0) {
+    return `Signal:${terminated.signal}`
+  }
+  if (typeof terminated.exitCode === 'number') {
+    return `ExitCode:${terminated.exitCode}`
+  }
+  return 'Terminated'
+}
+
+function summarizePodStatus(item: Record<string, any>) {
+  const metadata = item.metadata ?? {}
+  const status = item.status ?? {}
+  const podReason = typeof status.reason === 'string' ? status.reason : ''
+  const podPhase = typeof status.phase === 'string' && status.phase ? status.phase : '--'
+  const initContainerStatuses = resolvePodContainerStatuses(item, 'initContainerStatuses')
+
+  for (let index = 0; index < initContainerStatuses.length; index += 1) {
+    const containerStatus = initContainerStatuses[index]
+    const terminated = containerStatus.state?.terminated
+    if (terminated?.exitCode === 0) {
+      continue
+    }
+
+    if (terminated) {
+      return `Init:${resolvePodContainerTerminationReason(terminated)}`
+    }
+
+    const waitingReason = containerStatus.state?.waiting?.reason
+    if (waitingReason && waitingReason !== 'PodInitializing') {
+      return `Init:${waitingReason}`
+    }
+
+    return `Init:${index}/${initContainerStatuses.length}`
+  }
+
+  const containerStatuses = resolvePodContainerStatuses(item, 'containerStatuses')
+  let currentReason = podReason || podPhase
+  let hasRunningContainer = false
+
+  for (const containerStatus of containerStatuses) {
+    const waitingReason = containerStatus.state?.waiting?.reason
+    if (waitingReason) {
+      currentReason = waitingReason
+      break
+    }
+
+    const terminatedReason = resolvePodContainerTerminationReason(containerStatus.state?.terminated)
+    if (terminatedReason) {
+      currentReason = terminatedReason
+      break
+    }
+
+    if (containerStatus.state?.running) {
+      hasRunningContainer = true
+    }
+  }
+
+  if (currentReason === 'Completed' && hasRunningContainer) {
+    currentReason = 'Running'
+  }
+
+  if (metadata.deletionTimestamp) {
+    return podReason === 'NodeLost' ? 'Unknown' : 'Terminating'
+  }
+
+  return currentReason || '--'
+}
+
+function summarizePodRestarts(item: Record<string, any>) {
+  const statusKeys = ['initContainerStatuses', 'containerStatuses', 'ephemeralContainerStatuses']
+  return statusKeys
+    .flatMap((key) => resolvePodContainerStatuses(item, key))
+    .reduce((total, containerStatus) => total + normalizeReplicaCount(containerStatus.restartCount, 0), 0)
+}
+
 function summarizeStatus(item: Record<string, any>) {
   const isDeploymentResource =
     selectedResourceName.value === 'deployments' &&
@@ -985,6 +1244,10 @@ function summarizeStatus(item: Record<string, any>) {
       normalizeReplicaCount(status.replicas, 1),
     )
     return `${readyReplicas}/${desiredReplicas}`
+  }
+
+  if (isPodListResource.value) {
+    return summarizePodStatus(item)
   }
 
   const status = item.status ?? {}
@@ -1081,20 +1344,25 @@ async function loadDiscovery(options: { preserveSelection?: boolean; resetState?
     )
     discovery.value = payload
     await clusterStore.fetchClusters()
+    const storedResourceSelection = resolveStoredResourceSelection(selectedClusterId.value)
     const preferredGroup =
       payload.groups.find((group) => group.group === 'core' && group.version === 'v1') ?? payload.groups[0]
     const preferredGroupKey = preferredGroup ? `${preferredGroup.group}::${preferredGroup.version}` : ''
-    const currentGroup = payload.groups.find(
-      (group) => `${group.group}::${group.version}` === selectedGroupKey.value,
+    const targetGroupKey = options.preserveSelection ? selectedGroupKey.value : storedResourceSelection.groupKey
+    const targetResourceName = options.preserveSelection ? selectedResourceName.value : storedResourceSelection.resourceName
+    const targetGroup = payload.groups.find(
+      (group) => `${group.group}::${group.version}` === targetGroupKey,
     )
 
-    if (options.preserveSelection && currentGroup) {
-      selectedGroupKey.value = `${currentGroup.group}::${currentGroup.version}`
-      if (!currentGroup.resources.some((resource) => resource.name === selectedResourceName.value)) {
+    if (targetGroup) {
+      selectedGroupKey.value = `${targetGroup.group}::${targetGroup.version}`
+      if (!targetGroup.resources.some((resource) => resource.name === targetResourceName)) {
         selectedResourceName.value =
-          currentGroup.resources.find((resource) => resource.name === 'pods')?.name ??
-          currentGroup.resources[0]?.name ??
+          targetGroup.resources.find((resource) => resource.name === 'pods')?.name ??
+          targetGroup.resources[0]?.name ??
           ''
+      } else {
+        selectedResourceName.value = targetResourceName
       }
     } else {
       selectedGroupKey.value = preferredGroupKey
@@ -1151,11 +1419,23 @@ async function loadResourcePermissions(item: Record<string, any> | null = null) 
     query.set('name', name)
   }
   const queryString = query.toString()
+  const requestPath = `/api/v1/clusters/${selectedClusterId.value}/permissions/resources/${selectedGroup.value.group}/${selectedGroup.value.version}/${selectedResourceName.value}${queryString ? `?${queryString}` : ''}`
+
+  if (permissionCache.has(requestPath)) {
+    resourcePermissions.value = permissionCache.get(requestPath) ?? null
+    loadingPermissions.value = false
+    return
+  }
 
   try {
-    resourcePermissions.value = await apiRequest<ResourcePermissionResponse>(
-      `/api/v1/clusters/${selectedClusterId.value}/permissions/resources/${selectedGroup.value.group}/${selectedGroup.value.version}/${selectedResourceName.value}${queryString ? `?${queryString}` : ''}`,
-    )
+    let requestPromise = permissionRequestCache.get(requestPath)
+    if (!requestPromise) {
+      requestPromise = apiRequest<ResourcePermissionResponse>(requestPath)
+      permissionRequestCache.set(requestPath, requestPromise)
+    }
+    const payload = await requestPromise
+    permissionCache.set(requestPath, payload)
+    resourcePermissions.value = payload
   } catch (error) {
     resourcePermissions.value = null
     if (error instanceof ApiError) {
@@ -1164,6 +1444,7 @@ async function loadResourcePermissions(item: Record<string, any> | null = null) 
       permissionError.value = '权限探测失败，请稍后再试。'
     }
   } finally {
+    permissionRequestCache.delete(requestPath)
     loadingPermissions.value = false
   }
 }
@@ -1544,7 +1825,7 @@ function openPodLogsInNewTab() {
   window.open(target.href, '_blank', 'noopener,noreferrer')
 }
 
-function openPodTerminalInNewTab(shell: '/bin/sh' | '/bin/bash') {
+function openPodTerminalInNewTab(shell: TerminalShell = 'auto') {
   if (!selectedClusterId.value || !selectedDetail.value || !isPodResource.value || !canOpenTerminal.value) {
     return
   }
@@ -1708,12 +1989,36 @@ async function deleteResource() {
     return
   }
 
+  deleteActionMode.value = 'delete'
+  pendingDeleteName.value = targetName
+  deleteDialogVisible.value = true
+}
+
+function restartPod() {
+  if (
+    !selectedClusterId.value ||
+    !selectedGroup.value ||
+    !selectedResourceName.value ||
+    !selectedItem.value ||
+    !isPodResource.value ||
+    !canDeleteResource.value
+  ) {
+    return
+  }
+
+  const targetName = selectedItem.value.metadata?.name || ''
+  if (!targetName) {
+    return
+  }
+
+  deleteActionMode.value = 'restart'
   pendingDeleteName.value = targetName
   deleteDialogVisible.value = true
 }
 
 function cancelDeleteResource() {
   deleteDialogVisible.value = false
+  deleteActionMode.value = 'delete'
   pendingDeleteName.value = ''
 }
 
@@ -1753,7 +2058,10 @@ async function confirmDeleteResource() {
         method: 'DELETE',
       },
     )
-    const successMessage = `资源 ${targetName} 已删除。`
+    const successMessage =
+      deleteActionMode.value === 'restart'
+        ? `Pod ${targetName} 已删除，若存在控制器将自动创建新的实例。`
+        : `资源 ${targetName} 已删除。`
     selectedItem.value = null
     selectedDetail.value = null
     editorText.value = ''
@@ -1768,8 +2076,89 @@ async function confirmDeleteResource() {
     }
   } finally {
     deleting.value = false
+    deleteActionMode.value = 'delete'
     pendingDeleteName.value = ''
   }
+}
+
+async function updateDeploymentReplicas(nextReplicas: number) {
+  if (
+    !selectedClusterId.value ||
+    !selectedGroup.value ||
+    !selectedResourceName.value ||
+    !selectedItem.value ||
+    !selectedDetail.value ||
+    !isDeploymentDetail.value ||
+    !canEditYaml.value
+  ) {
+    return
+  }
+
+  const normalizedReplicas = normalizeReplicaCount(nextReplicas, deploymentDesiredReplicas.value)
+  const currentReplicas = deploymentDesiredReplicas.value
+  if (normalizedReplicas === currentReplicas) {
+    return
+  }
+
+  applying.value = true
+  applyError.value = ''
+  applyMessage.value = ''
+
+  const namespaceQuery =
+    selectedResource.value?.namespaced && selectedNamespaceOrDefault.value
+      ? `?namespace=${encodeURIComponent(selectedNamespaceOrDefault.value)}`
+      : ''
+
+  try {
+    const nextManifest = buildCompactManifestForApply(selectedDetail.value.object ?? {})
+    const nextSpec = nextManifest.spec && typeof nextManifest.spec === 'object' ? nextManifest.spec : {}
+    nextManifest.spec = {
+      ...nextSpec,
+      replicas: normalizedReplicas,
+    }
+
+    const payload = await apiRequest<ResourceDetailResponse>(
+      `/api/v1/clusters/${selectedClusterId.value}/resources/${selectedGroup.value.group}/${selectedGroup.value.version}/${selectedResourceName.value}/${encodeURIComponent(selectedItem.value.metadata?.name || '')}/apply${namespaceQuery}`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          manifest: JSON.stringify(nextManifest, null, 2),
+          dry_run: false,
+          force: true,
+        }),
+      },
+    )
+
+    selectedDetail.value = payload
+    editorText.value = payload.yaml
+    hydrateFormDraft(payload.object)
+    const successMessage =
+      normalizedReplicas > currentReplicas
+        ? `Deployment 已扩容到 ${normalizedReplicas} 个副本。`
+        : `Deployment 已缩容到 ${normalizedReplicas} 个副本。`
+    await loadResources({
+      preserveFeedback: true,
+      targetKey: resourceItemKey(payload.object),
+    })
+    applyMessage.value = successMessage
+  } catch (error) {
+    if (error instanceof ApiError) {
+      applyError.value = error.message
+    } else {
+      applyError.value = '调整副本数失败，请检查后端日志。'
+    }
+  } finally {
+    applying.value = false
+  }
+}
+
+async function scaleDeploymentBy(delta: number) {
+  if (!isDeploymentDetail.value || !delta) {
+    return
+  }
+
+  const nextReplicas = Math.max(deploymentDesiredReplicas.value + delta, 0)
+  await updateDeploymentReplicas(nextReplicas)
 }
 
 function stopLogFollowing() {
@@ -1819,6 +2208,13 @@ watch(selectedNamespace, (value) => {
     return
   }
   storeSelectedNamespace(selectedClusterId.value, value)
+})
+
+watch([selectedGroupKey, selectedResourceName], ([groupKey, resourceName]) => {
+  if (!selectedClusterId.value || !groupKey || !resourceName) {
+    return
+  }
+  storeSelectedResourceSelection(selectedClusterId.value, groupKey, resourceName)
 })
 
 watch(selectedGroupKey, () => {
@@ -2113,6 +2509,7 @@ watch(
                   <span class="explorer-sort-indicator">{{ resourceSortIndicator('status') }}</span>
                 </button>
               </th>
+              <th v-if="isPodListResource" class="explorer-th-titlecase">Restarts</th>
               <th>
                 <button type="button" class="explorer-sort-button" @click="toggleResourceSort('age')">
                   Age
@@ -2140,6 +2537,7 @@ watch(
               <td v-if="isServiceResource()">{{ resolveServiceType(item) }}</td>
               <td v-if="isServiceResource()">{{ resolveServicePorts(item) }}</td>
               <td>{{ summarizeStatus(item) }}</td>
+              <td v-if="isPodListResource">{{ summarizePodRestarts(item) }}</td>
               <td>{{ formatAge(item.metadata?.creationTimestamp) }}</td>
             </tr>
           </tbody>
@@ -2258,6 +2656,45 @@ watch(
           当前处于新建草稿模式，编辑器接受 YAML 或 JSON；Create 会调用 Kubernetes 资源集合创建接口。
         </div>
 
+        <section
+          v-if="isDeploymentDetail && !isCreating"
+          class="log-panel pod-quick-panel deployment-quick-panel"
+          style="margin-bottom: 12px"
+        >
+          <div class="deployment-quick-header">
+            <div class="deployment-quick-meta">
+              <div class="deployment-quick-summary">
+                <span class="deployment-quick-pill">副本 {{ deploymentDesiredReplicas }}</span>
+                <span class="deployment-scale-status deployment-quick-pill" :class="deploymentScaleStatusClass">
+                  <span class="deployment-scale-status-dot" aria-hidden="true"></span>
+                  {{ deploymentScaleStatusLabel }}
+                </span>
+              </div>
+            </div>
+            <div class="deployment-scale-control" role="group" aria-label="Deployment 副本调整">
+              <button
+                class="button button-secondary deployment-scale-button"
+                :disabled="applying || deleting || loadingPermissions || isEditing || !canEditYaml || deploymentDesiredReplicas <= 0"
+                aria-label="缩容一个副本"
+                @click="scaleDeploymentBy(-1)"
+              >
+                -
+              </button>
+              <div class="deployment-scale-metric" aria-live="polite" :aria-label="`当前副本 ${deploymentDesiredReplicas}`">
+                <span class="deployment-scale-value">{{ deploymentDesiredReplicas }}</span>
+              </div>
+              <button
+                class="button button-primary deployment-scale-button"
+                :disabled="applying || deleting || loadingPermissions || isEditing || !canEditYaml"
+                aria-label="扩容一个副本"
+                @click="scaleDeploymentBy(1)"
+              >
+                +
+              </button>
+            </div>
+          </div>
+        </section>
+
         <section v-if="isPodResource && !isCreating" class="log-panel pod-quick-panel">
           <div class="pod-quick-header">
             <div>
@@ -2266,21 +2703,21 @@ watch(
             </div>
             <div class="pod-quick-actions">
               <button class="button button-primary pod-quick-action" :disabled="!canViewPodLogs" @click="openPodLogsInNewTab">
-                查看日志
+                日志
+              </button>
+              <button
+                class="button button-danger pod-quick-action"
+                :disabled="deleting || applying || loadingPermissions || !canDeleteResource"
+                @click="restartPod"
+              >
+                {{ podRestartButtonLabel }}
               </button>
               <button
                 class="button button-secondary pod-quick-action"
                 :disabled="!canOpenTerminal"
-                @click="openPodTerminalInNewTab('/bin/sh')"
+                @click="openPodTerminalInNewTab()"
               >
-                sh
-              </button>
-              <button
-                class="button button-secondary pod-quick-action"
-                :disabled="!canOpenTerminal"
-                @click="openPodTerminalInNewTab('/bin/bash')"
-              >
-                bash
+                终端
               </button>
             </div>
           </div>
@@ -2403,7 +2840,7 @@ watch(
                 当前账号没有 `pods/exec` 权限，暂时无法建立终端会话。
               </div>
               <div v-else class="helper-text pod-quick-helper">
-                新页签会直接连接目标容器，支持命令输入、回车、Ctrl+C 和终端尺寸调整。
+                新页签会自动优先进入 bash，不可用时回退到 sh，并支持命令输入、Ctrl+C 和终端尺寸调整。
               </div>
             </section>
           </div>
@@ -2468,9 +2905,9 @@ watch(
 
     <ConfirmDialog
       :visible="deleteDialogVisible"
-      title="删除资源"
-      :message="pendingDeleteName ? `确认删除资源 ${pendingDeleteName} 吗？该操作不可撤销。` : ''"
-      confirm-text="删除"
+      :title="deleteDialogTitle"
+      :message="deleteDialogMessage"
+      :confirm-text="deleteDialogConfirmText"
       cancel-text="取消"
       :danger="true"
       @confirm="confirmDeleteResource"

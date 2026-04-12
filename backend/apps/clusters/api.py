@@ -10,11 +10,31 @@ from .serializers import ClusterDetailSerializer, ClusterImportSerializer, Clust
 from .services import load_local_kubeconfig
 
 
-def _sync_discovery_after_health_check(client: KubernetesClient, cluster: Cluster) -> dict:
-    discovery = client.discover()
+def _append_health_message(base: str, suffix: str) -> str:
+    message = f"{base} {suffix}".strip()
+    return message[:255]
+
+
+def _sync_discovery_after_health_check(
+    client: KubernetesClient,
+    cluster: Cluster,
+    *,
+    version: dict | None = None,
+) -> dict:
+    discovery = client.discover(best_effort=True, version=version)
     client.sync_capability_from_discovery(discovery)
     group_count = len(discovery.get("groups", []))
-    cluster.health.message = f"{cluster.health.message} Discovery 已同步 {group_count} 个资源组。"
+    warnings = discovery.get("warnings", [])
+    if warnings:
+        cluster.health.message = _append_health_message(
+            cluster.health.message,
+            f"Discovery 已同步 {group_count} 个资源组，跳过 {len(warnings)} 个异常接口。",
+        )
+    else:
+        cluster.health.message = _append_health_message(
+            cluster.health.message,
+            f"Discovery 已同步 {group_count} 个资源组。",
+        )
     cluster.health.save(update_fields=["message", "last_checked_at"])
     return discovery
 
@@ -34,15 +54,15 @@ class ClusterListCreateView(generics.ListCreateAPIView):
         client = KubernetesClient(cluster)
         # 导入后立即触发一次真实联通性探测，避免状态长期停留在 pending。
         try:
-            client.sync_health()
+            probe = client.sync_health()
         except KubernetesAPIError:
             # 导入流程本身已完成，探测失败只更新健康状态，不影响 201 响应。
             pass
         else:
             try:
-                _sync_discovery_after_health_check(client, cluster)
+                _sync_discovery_after_health_check(client, cluster, version=probe["version"])
             except KubernetesAPIError as exc:
-                cluster.health.message = f"{cluster.health.message} Discovery 同步失败：{exc}"
+                cluster.health.message = _append_health_message(cluster.health.message, f"Discovery 同步失败：{exc}")
                 cluster.health.save(update_fields=["message", "last_checked_at"])
         response_serializer = ClusterSerializer(cluster)
         return Response(response_serializer.data, status=status.HTTP_201_CREATED)
@@ -83,14 +103,14 @@ class ClusterDetailView(generics.RetrieveUpdateDestroyAPIView):
         if "kubeconfig" in serializer.validated_data:
             client = KubernetesClient(cluster)
             try:
-                client.sync_health()
+                probe = client.sync_health()
             except KubernetesAPIError:
                 pass
             else:
                 try:
-                    _sync_discovery_after_health_check(client, cluster)
+                    _sync_discovery_after_health_check(client, cluster, version=probe["version"])
                 except KubernetesAPIError as exc:
-                    cluster.health.message = f"{cluster.health.message} Discovery 同步失败：{exc}"
+                    cluster.health.message = _append_health_message(cluster.health.message, f"Discovery 同步失败：{exc}")
                     cluster.health.save(update_fields=["message", "last_checked_at"])
 
         record_audit_event(
@@ -156,7 +176,7 @@ class ClusterHealthCheckView(APIView):
             )
         discovery = None
         try:
-            discovery = _sync_discovery_after_health_check(client, cluster)
+            discovery = _sync_discovery_after_health_check(client, cluster, version=probe["version"])
         except KubernetesAPIError as exc:
             record_audit_event(
                 event_type="cluster.discovery",
@@ -168,7 +188,7 @@ class ClusterHealthCheckView(APIView):
                 target={"cluster_id": str(cluster.id)},
                 metadata={"message": str(exc)},
             )
-            cluster.health.message = f"{cluster.health.message} Discovery 同步失败：{exc}"
+            cluster.health.message = _append_health_message(cluster.health.message, f"Discovery 同步失败：{exc}")
             cluster.health.save(update_fields=["message", "last_checked_at"])
         else:
             record_audit_event(

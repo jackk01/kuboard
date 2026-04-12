@@ -3,6 +3,41 @@ type RequestOptions = RequestInit & {
   acceptErrorResponse?: boolean
 }
 
+function formatErrorDetails(details: unknown, fieldName?: string): string[] {
+  if (typeof details === 'string') {
+    return [fieldName ? `${fieldName}: ${details}` : details]
+  }
+
+  if (Array.isArray(details)) {
+    return details.flatMap((item) => formatErrorDetails(item, fieldName))
+  }
+
+  if (details && typeof details === 'object') {
+    return Object.entries(details as Record<string, unknown>).flatMap(([key, value]) => {
+      const label = key === 'non_field_errors' || key === 'detail' ? fieldName : key
+      return formatErrorDetails(value, label)
+    })
+  }
+
+  return []
+}
+
+function getErrorMessage(payload: unknown): string {
+  if (payload && typeof payload === 'object' && 'message' in payload && typeof payload.message === 'string') {
+    return payload.message
+  }
+
+  const messages = formatErrorDetails(payload)
+    .map((item) => item.trim())
+    .filter(Boolean)
+
+  if (messages.length) {
+    return messages.join('；')
+  }
+
+  return '请求失败，请稍后再试。'
+}
+
 class ApiError extends Error {
   status: number
   details: unknown
@@ -56,11 +91,7 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     if (options.acceptErrorResponse) {
       return payload as T
     }
-    throw new ApiError(
-      payload?.message ?? '请求失败，请稍后再试。',
-      response.status,
-      payload,
-    )
+    throw new ApiError(getErrorMessage(payload), response.status, payload)
   }
 
   return payload as T

@@ -80,6 +80,7 @@ const filteredClusters = computed(() => {
 })
 
 const environments = ['test', 'dev', 'uat', 'prod'] as const
+const canImportCluster = computed(() => Boolean(form.name.trim() && form.kubeconfig.trim()))
 
 onMounted(async () => {
   await clusterStore.fetchClusters()
@@ -148,10 +149,16 @@ async function importCluster() {
   feedback.value = ''
 
   try {
+    const normalizedName = form.name.trim()
+    if (!normalizedName) {
+      errorMessage.value = '请先填写集群名称。'
+      return
+    }
+
     const payload = {
-      name: form.name,
+      name: normalizedName,
       environment: form.environment,
-      description: form.description,
+      description: form.description.trim(),
       kubeconfig: form.kubeconfig,
     }
 
@@ -639,10 +646,11 @@ async function confirmDelete() {
         </div>
 
         <div class="button-row" style="margin-top: 16px">
-          <button class="button button-primary" :disabled="clusterStore.saving || !form.kubeconfig.trim()" @click="importCluster">
+          <button class="button button-primary" :disabled="clusterStore.saving || !canImportCluster" @click="importCluster">
             {{ clusterStore.saving ? '导入中...' : '导入集群' }}
           </button>
-          <span v-if="!form.kubeconfig.trim()" class="helper-text">请先提供 kubeconfig 内容</span>
+          <span v-if="!form.name.trim()" class="helper-text">请先填写集群名称</span>
+          <span v-else-if="!form.kubeconfig.trim()" class="helper-text">请先提供 kubeconfig 内容</span>
         </div>
       </div>
     </section>

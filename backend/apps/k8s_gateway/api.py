@@ -15,6 +15,14 @@ from apps.streams.models import StreamSession
 from .services import KubernetesAPIError, KubernetesClient
 
 
+def _build_discovery_health_message(discovery: dict) -> str:
+    group_count = len(discovery.get("groups", []))
+    warning_count = len(discovery.get("warnings", []))
+    if warning_count:
+        return f"Discovery 成功，已同步 {group_count} 个资源组，跳过 {warning_count} 个异常接口。"
+    return f"Discovery 成功，已同步 {group_count} 个资源组。"
+
+
 class ResourceApplySerializer(serializers.Serializer):
     manifest = serializers.CharField()
     dry_run = serializers.BooleanField(default=False)
@@ -68,7 +76,7 @@ class ClusterDiscoveryView(APIView):
         client = KubernetesClient(cluster, actor=request.user)
 
         try:
-            discovery = client.discover()
+            discovery = client.discover(best_effort=True)
             client.sync_capability_from_discovery(discovery)
         except KubernetesAPIError as exc:
             return Response(
@@ -88,7 +96,7 @@ class ClusterDiscoveryView(APIView):
             update_fields=["status", "health_state", "kube_version", "last_error", "last_seen_at", "updated_at"]
         )
         cluster.health.status = ClusterHealthState.HEALTHY
-        cluster.health.message = f"Discovery 成功，已同步 {len(discovery.get('groups', []))} 个资源组。"
+        cluster.health.message = _build_discovery_health_message(discovery)
         cluster.health.save(update_fields=["status", "message", "last_checked_at"])
 
         record_audit_event(

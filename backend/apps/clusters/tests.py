@@ -373,6 +373,63 @@ current-context: sample
         self.assertEqual(payload["health"]["status"], ClusterHealthState.HEALTHY)
         self.assertIn("Kubernetes 版本", payload["health"]["message"])
         self.assertIn("Discovery 已同步", payload["health"]["message"])
+        discover_mock.assert_called_once_with(best_effort=True, version={"gitVersion": "v1.30.0"})
+
+    @patch("apps.k8s_gateway.services.KubernetesClient.discover")
+    @patch("apps.k8s_gateway.services.KubernetesClient.probe")
+    def test_import_cluster_partial_discovery_keeps_health_check_success(self, probe_mock, discover_mock):
+        probe_mock.return_value = {"version": {"gitVersion": "v1.30.0"}, "latency_ms": 12}
+        discover_mock.return_value = {
+            "groups": [{"group": "core", "version": "v1", "preferred_version": "v1", "resources": []}],
+            "resource_index": {},
+            "supports_exec": False,
+            "warnings": [
+                {
+                    "group": "metrics.k8s.io",
+                    "version": "v1beta1",
+                    "path": "/apis/metrics.k8s.io/v1beta1",
+                    "message": "连接集群超时: The read operation timed out",
+                    "status_code": 504,
+                }
+            ],
+            "partial": True,
+        }
+
+        response = self.client.post(
+            "/api/v1/clusters",
+            data={
+                "name": "imported-cluster-partial-discovery",
+                "environment": "dev",
+                "description": "import test",
+                "kubeconfig": """\
+apiVersion: v1
+kind: Config
+clusters:
+  - name: sample
+    cluster:
+      server: https://127.0.0.1:6443
+users:
+  - name: sample
+    user:
+      token: test-token
+contexts:
+  - name: sample
+    context:
+      cluster: sample
+      user: sample
+current-context: sample
+""",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        payload = response.json()
+        self.assertEqual(payload["status"], ClusterStatus.READY)
+        self.assertEqual(payload["health_state"], ClusterHealthState.HEALTHY)
+        self.assertIn("Discovery 已同步", payload["health"]["message"])
+        self.assertIn("跳过 1 个异常接口", payload["health"]["message"])
+        discover_mock.assert_called_once_with(best_effort=True, version={"gitVersion": "v1.30.0"})
 
     @patch("apps.k8s_gateway.services.KubernetesClient.probe", side_effect=KubernetesAPIError("探测失败", status_code=502))
     def test_import_cluster_health_probe_failure_does_not_block_import(self, _probe_mock):
@@ -448,3 +505,32 @@ current-context: sample
         self.assertEqual(payload["status"], ClusterStatus.READY)
         self.assertEqual(payload["health_state"], ClusterHealthState.HEALTHY)
         self.assertIn("Discovery 同步失败", payload["health"]["message"])
+
+    @patch("apps.k8s_gateway.services.KubernetesClient.discover")
+    @patch("apps.k8s_gateway.services.KubernetesClient.probe")
+    def test_manual_health_check_partial_discovery_returns_success(self, probe_mock, discover_mock):
+        probe_mock.return_value = {"version": {"gitVersion": "v1.30.1"}, "latency_ms": 9}
+        discover_mock.return_value = {
+            "groups": [{"group": "core", "version": "v1", "preferred_version": "v1", "resources": []}],
+            "resource_index": {},
+            "supports_exec": False,
+            "warnings": [
+                {
+                    "group": "metrics.k8s.io",
+                    "version": "v1beta1",
+                    "path": "/apis/metrics.k8s.io/v1beta1",
+                    "message": "连接集群超时: The read operation timed out",
+                    "status_code": 504,
+                }
+            ],
+            "partial": True,
+        }
+
+        response = self.client.post(f"/api/v1/clusters/{self.cluster.id}/health-check", format="json")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], ClusterStatus.READY)
+        self.assertEqual(payload["health_state"], ClusterHealthState.HEALTHY)
+        self.assertIn("跳过 1 个异常接口", payload["health"]["message"])
+        discover_mock.assert_called_once_with(best_effort=True, version={"gitVersion": "v1.30.1"})

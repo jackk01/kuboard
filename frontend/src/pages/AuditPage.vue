@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import StatusBadge from '../components/StatusBadge.vue'
 import { ApiError, apiRequest } from '../lib/api'
@@ -9,6 +9,11 @@ const loading = ref(true)
 const errorMessage = ref('')
 const events = ref<AuditEvent[]>([])
 const selectedEventId = ref<number | null>(null)
+const auditPage = ref(1)
+const auditPageSize = ref(10)
+const auditPageSizeOptions = [10, 20, 50, 100] as const
+const auditPageSizeMenuOpen = ref(false)
+const auditPageSizeMenuRef = ref<HTMLElement | null>(null)
 
 const keyword = ref('')
 const statusFilter = ref<'all' | 'success' | 'error' | 'denied'>('all')
@@ -53,8 +58,42 @@ const filteredEvents = computed(() => {
     })
 })
 
+const auditTotalPages = computed(() => Math.max(1, Math.ceil(filteredEvents.value.length / auditPageSize.value)))
+
+const paginatedEvents = computed(() => {
+  const start = (auditPage.value - 1) * auditPageSize.value
+  return filteredEvents.value.slice(start, start + auditPageSize.value)
+})
+
+const auditPageStart = computed(() => (filteredEvents.value.length ? (auditPage.value - 1) * auditPageSize.value + 1 : 0))
+
+const auditPageEnd = computed(() =>
+  filteredEvents.value.length ? Math.min(auditPage.value * auditPageSize.value, filteredEvents.value.length) : 0,
+)
+
+const selectedAuditPageSizeLabel = computed(() => `${auditPageSize.value} 条`)
+
 function formatDateTime(value: string) {
   return new Date(value).toLocaleString('zh-CN', { hour12: false })
+}
+
+function applyStatusFilter(nextStatus: 'all' | 'success' | 'error' | 'denied') {
+  statusFilter.value = nextStatus
+}
+
+function closeAuditDropdownMenus() {
+  auditPageSizeMenuOpen.value = false
+}
+
+function syncSelectedEventToPage() {
+  if (!paginatedEvents.value.length) {
+    selectedEventId.value = null
+    return
+  }
+
+  if (!paginatedEvents.value.some((event) => event.id === selectedEventId.value)) {
+    selectedEventId.value = paginatedEvents.value[0].id
+  }
 }
 
 function copyRequestId() {
@@ -62,14 +101,30 @@ function copyRequestId() {
   navigator.clipboard.writeText(selectedEvent.value.request_id)
 }
 
+function goToAuditPage(page: number) {
+  auditPage.value = Math.min(Math.max(page, 1), auditTotalPages.value)
+}
+
+function toggleAuditPageSizeMenu() {
+  const nextOpen = !auditPageSizeMenuOpen.value
+  closeAuditDropdownMenus()
+  auditPageSizeMenuOpen.value = nextOpen
+}
+
+function selectAuditPageSize(size: (typeof auditPageSizeOptions)[number]) {
+  auditPageSize.value = size
+  auditPageSizeMenuOpen.value = false
+}
+
 async function fetchEvents() {
   loading.value = true
   errorMessage.value = ''
   try {
     events.value = await apiRequest<AuditEvent[]>('/api/v1/audit/events?limit=100')
-    if (!selectedEventId.value && events.value.length) {
-      selectedEventId.value = events.value[0].id
+    if (auditPage.value > auditTotalPages.value) {
+      auditPage.value = auditTotalPages.value
     }
+    syncSelectedEventToPage()
   } catch (error) {
     if (error instanceof ApiError) {
       errorMessage.value = error.message
@@ -81,10 +136,6 @@ async function fetchEvents() {
   }
 }
 
-onMounted(async () => {
-  await fetchEvents()
-})
-
 function handleShellCommand(event: Event) {
   const customEvent = event as CustomEvent<{ action?: string }>
   if (customEvent.detail?.action === 'audit.refresh') {
@@ -92,12 +143,53 @@ function handleShellCommand(event: Event) {
   }
 }
 
+function handleDocumentPointerdown(event: PointerEvent) {
+  const target = event.target
+  if (!(target instanceof Node)) {
+    return
+  }
+  if (auditPageSizeMenuRef.value?.contains(target)) {
+    return
+  }
+  closeAuditDropdownMenus()
+}
+
+function handleGlobalKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape' && auditPageSizeMenuOpen.value) {
+    closeAuditDropdownMenus()
+    event.preventDefault()
+  }
+}
+
 onMounted(() => {
   window.addEventListener('kuboard:command', handleShellCommand as EventListener)
+  window.addEventListener('keydown', handleGlobalKeydown)
+  document.addEventListener('pointerdown', handleDocumentPointerdown)
+  void fetchEvents()
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('kuboard:command', handleShellCommand as EventListener)
+  window.removeEventListener('keydown', handleGlobalKeydown)
+  document.removeEventListener('pointerdown', handleDocumentPointerdown)
+})
+
+watch([keyword, statusFilter, severityFilter], () => {
+  auditPage.value = 1
+})
+
+watch(auditPageSize, () => {
+  auditPage.value = 1
+})
+
+watch(filteredEvents, () => {
+  if (auditPage.value > auditTotalPages.value) {
+    auditPage.value = auditTotalPages.value
+  }
+})
+
+watch(paginatedEvents, () => {
+  syncSelectedEventToPage()
 })
 </script>
 
@@ -115,22 +207,42 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="cluster-summary-grid audit-summary-grid">
-        <article class="cluster-summary-card">
+        <button
+          type="button"
+          class="cluster-summary-card audit-summary-card-button"
+          :class="{ 'audit-summary-card-active': statusFilter === 'all' }"
+          @click="applyStatusFilter('all')"
+        >
           <span>总事件数</span>
           <strong>{{ summary.total }}</strong>
-        </article>
-        <article class="cluster-summary-card">
+        </button>
+        <button
+          type="button"
+          class="cluster-summary-card audit-summary-card-button"
+          :class="{ 'audit-summary-card-active': statusFilter === 'success' }"
+          @click="applyStatusFilter('success')"
+        >
           <span>成功</span>
           <strong class="is-ready">{{ summary.success }}</strong>
-        </article>
-        <article class="cluster-summary-card">
+        </button>
+        <button
+          type="button"
+          class="cluster-summary-card audit-summary-card-button"
+          :class="{ 'audit-summary-card-active': statusFilter === 'denied' }"
+          @click="applyStatusFilter('denied')"
+        >
           <span>拒绝</span>
           <strong class="is-pending">{{ summary.denied }}</strong>
-        </article>
-        <article class="cluster-summary-card">
+        </button>
+        <button
+          type="button"
+          class="cluster-summary-card audit-summary-card-button"
+          :class="{ 'audit-summary-card-active': statusFilter === 'error' }"
+          @click="applyStatusFilter('error')"
+        >
           <span>错误</span>
           <strong class="is-error">{{ summary.error }}</strong>
-        </article>
+        </button>
       </div>
     </section>
 
@@ -159,40 +271,112 @@ onBeforeUnmount(() => {
 
       <div class="split-detail audit-split">
         <div class="audit-table-wrap">
+          <div v-if="filteredEvents.length && !loading" class="audit-table-summary">
+            共 {{ filteredEvents.length }} 条，当前显示第 {{ auditPageStart || 0 }} - {{ auditPageEnd || 0 }} 条。
+          </div>
           <div v-if="loading" class="empty-state">正在加载审计事件...</div>
-          <table v-else-if="filteredEvents.length" class="table audit-table">
-            <thead>
-              <tr>
-                <th>事件</th>
-                <th>状态</th>
-                <th>级别</th>
-                <th>操作者</th>
-                <th>目标集群</th>
-                <th>时间</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr
-                v-for="event in filteredEvents"
-                :key="event.id"
-                :class="{ 'table-row-active': selectedEventId === event.id }"
-                @click="selectedEventId = event.id"
-                style="cursor: pointer"
-              >
-                <td>
-                  <div class="audit-cell-main">
-                    <strong>{{ event.event_type }}</strong>
-                    <span class="muted">{{ event.request_id || 'no-request-id' }}</span>
+          <template v-else-if="filteredEvents.length">
+            <div class="audit-table-panel">
+              <table class="table audit-table">
+                <thead>
+                  <tr>
+                    <th>事件</th>
+                    <th>状态</th>
+                    <th>级别</th>
+                    <th>操作者</th>
+                    <th>目标集群</th>
+                    <th>时间</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr
+                    v-for="event in paginatedEvents"
+                    :key="event.id"
+                    :class="{ 'table-row-active': selectedEventId === event.id }"
+                    @click="selectedEventId = event.id"
+                    style="cursor: pointer"
+                  >
+                    <td>
+                      <div class="audit-cell-main">
+                        <strong>{{ event.event_type }}</strong>
+                        <span class="muted">{{ event.request_id || 'no-request-id' }}</span>
+                      </div>
+                    </td>
+                    <td><StatusBadge :value="event.status" /></td>
+                    <td><StatusBadge :value="event.severity" /></td>
+                    <td>{{ event.actor_display || event.actor_email || 'system' }}</td>
+                    <td>{{ event.cluster_name || '--' }}</td>
+                    <td>{{ formatDateTime(event.created_at) }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="explorer-pagination">
+              <div class="explorer-pagination-pill">
+                第 {{ auditPage }} / {{ auditTotalPages }} 页
+              </div>
+              <div class="explorer-pagination-controls">
+                <label class="field-label explorer-page-size-field">
+                  <div
+                    ref="auditPageSizeMenuRef"
+                    class="pod-quick-dropdown"
+                    :class="{ 'pod-quick-dropdown-open': auditPageSizeMenuOpen }"
+                  >
+                    <button
+                      type="button"
+                      class="pod-quick-dropdown-trigger"
+                      :aria-expanded="auditPageSizeMenuOpen"
+                      aria-haspopup="menu"
+                      @click="toggleAuditPageSizeMenu"
+                    >
+                      <span class="pod-quick-dropdown-value">{{ selectedAuditPageSizeLabel }}</span>
+                      <span class="pod-quick-dropdown-caret" aria-hidden="true"></span>
+                    </button>
+
+                    <div v-if="auditPageSizeMenuOpen" class="pod-quick-dropdown-menu">
+                      <button
+                        v-for="size in auditPageSizeOptions"
+                        :key="size"
+                        type="button"
+                        class="pod-quick-dropdown-option"
+                        :class="{ 'pod-quick-dropdown-option-active': auditPageSize === size }"
+                        @click="selectAuditPageSize(size)"
+                      >
+                        {{ size }} 条
+                      </button>
+                    </div>
                   </div>
-                </td>
-                <td><StatusBadge :value="event.status" /></td>
-                <td><StatusBadge :value="event.severity" /></td>
-                <td>{{ event.actor_display || event.actor_email || 'system' }}</td>
-                <td>{{ event.cluster_name || '--' }}</td>
-                <td>{{ formatDateTime(event.created_at) }}</td>
-              </tr>
-            </tbody>
-          </table>
+                </label>
+              </div>
+              <div class="button-row explorer-pagination-actions">
+                <button class="button button-secondary explorer-pagination-button" :disabled="auditPage <= 1" @click="goToAuditPage(1)">
+                  首
+                </button>
+                <button
+                  class="button button-secondary explorer-pagination-button"
+                  :disabled="auditPage <= 1"
+                  @click="goToAuditPage(auditPage - 1)"
+                >
+                  上一页
+                </button>
+                <button
+                  class="button button-secondary explorer-pagination-button"
+                  :disabled="auditPage >= auditTotalPages"
+                  @click="goToAuditPage(auditPage + 1)"
+                >
+                  下一页
+                </button>
+                <button
+                  class="button button-secondary explorer-pagination-button"
+                  :disabled="auditPage >= auditTotalPages"
+                  @click="goToAuditPage(auditTotalPages)"
+                >
+                  末
+                </button>
+              </div>
+            </div>
+          </template>
           <div v-else class="empty-state">当前筛选条件下没有审计事件。</div>
         </div>
 
