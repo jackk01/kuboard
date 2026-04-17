@@ -288,6 +288,61 @@ export interface ResourceWatchResponse {
   }
 }
 
+export interface ClusterEventRecord {
+  id: string
+  name: string
+  namespace: string
+  type: string
+  reason: string
+  message: string
+  action: string
+  count: number
+  event_time: string
+  first_seen: string
+  last_seen: string
+  regarding: {
+    kind: string
+    name: string
+    namespace: string
+    api_version: string
+    field_path: string
+    uid: string
+  }
+  source: {
+    component: string
+    instance: string
+  }
+  resource: {
+    group: string
+    version: string
+    name: string
+    kind: string
+  }
+  metadata: {
+    uid: string
+    resource_version: string
+    creation_timestamp: string
+  }
+  raw: Record<string, any>
+}
+
+export interface ClusterEventListResponse {
+  resource: {
+    group: string
+    version: string
+    name: string
+    kind: string
+    namespaced: boolean
+    namespace: string | null
+  }
+  items: ClusterEventRecord[]
+  metadata: {
+    count: number
+    continue: string
+    resource_version: string
+  }
+}
+
 export interface SubjectMapping {
   id: number
   source_type: string

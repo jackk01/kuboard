@@ -70,6 +70,12 @@ class ResourceWatchQuerySerializer(serializers.Serializer):
     timeout_seconds = serializers.IntegerField(required=False, min_value=3, max_value=30, default=10)
 
 
+class EventListQuerySerializer(serializers.Serializer):
+    namespace = serializers.CharField(required=False, allow_blank=True)
+    limit = serializers.IntegerField(required=False, min_value=10, max_value=500, default=200)
+    continue_token = serializers.CharField(required=False, allow_blank=True, source="continue")
+
+
 class ClusterDiscoveryView(APIView):
     def get(self, request, pk):
         cluster = get_object_or_404(Cluster.objects.select_related("credential", "capability", "health"), pk=pk)
@@ -720,6 +726,58 @@ class ResourceWatchView(APIView):
                 status=exc.status_code or status.HTTP_502_BAD_GATEWAY,
             )
 
+        return Response(payload)
+
+
+class EventListView(APIView):
+    def get(self, request, pk):
+        cluster = get_object_or_404(Cluster.objects.select_related("credential", "capability", "health"), pk=pk)
+        client = KubernetesClient(cluster, actor=request.user)
+        serializer = EventListQuerySerializer(data=request.query_params)
+        serializer.is_valid(raise_exception=True)
+
+        namespace = serializer.validated_data.get("namespace") or None
+        continue_token = serializer.validated_data.get("continue") or None
+
+        try:
+            payload = client.list_cluster_events(
+                namespace=namespace,
+                limit=serializer.validated_data["limit"],
+                continue_token=continue_token,
+            )
+        except KubernetesAPIError as exc:
+            record_audit_event(
+                event_type="k8s.events.list",
+                actor=request.user,
+                cluster=cluster,
+                request=request,
+                severity="warning",
+                status="error",
+                target={
+                    "cluster_id": str(cluster.id),
+                    "namespace": namespace,
+                },
+                metadata={"message": str(exc)},
+            )
+            return Response(
+                {"message": str(exc), "details": exc.details},
+                status=exc.status_code or status.HTTP_502_BAD_GATEWAY,
+            )
+
+        record_audit_event(
+            event_type="k8s.events.list",
+            actor=request.user,
+            cluster=cluster,
+            request=request,
+            status="success",
+            target={
+                "cluster_id": str(cluster.id),
+                "namespace": namespace,
+                "resource_group": payload["resource"]["group"],
+                "resource_version": payload["resource"]["version"],
+            },
+            metadata={"count": payload["metadata"]["count"]},
+        )
         return Response(payload)
 
 

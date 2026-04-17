@@ -47,6 +47,7 @@ def build_resource_path(
     namespaced: bool,
     namespace: str | None = None,
     name: str | None = None,
+    all_namespaces: bool = False,
 ) -> str:
     if group in ("", "core"):
         prefix = f"/api/{version}"
@@ -54,6 +55,11 @@ def build_resource_path(
         prefix = f"/apis/{group}/{version}"
 
     if namespaced:
+        if all_namespaces:
+            path = f"{prefix}/{resource}"
+            if name:
+                return f"{path}/{parse.quote(name)}"
+            return path
         target_namespace = namespace or "default"
         path = f"{prefix}/namespaces/{parse.quote(target_namespace)}/{resource}"
         if name:
@@ -1138,6 +1144,156 @@ class KubernetesClient:
             "items": payload.get("items", []),
             "metadata": {
                 "count": len(payload.get("items", [])),
+                "continue": metadata.get("continue", ""),
+                "resource_version": metadata.get("resourceVersion", ""),
+            },
+        }
+
+    @staticmethod
+    def _coalesce_text(*values: Any) -> str:
+        for value in values:
+            if isinstance(value, str):
+                trimmed = value.strip()
+                if trimmed:
+                    return trimmed
+            elif value not in (None, "", []):
+                return str(value)
+        return ""
+
+    @staticmethod
+    def _coerce_event_count(value: Any) -> int:
+        try:
+            parsed = int(value)
+            return parsed if parsed > 0 else 1
+        except (TypeError, ValueError):
+            return 1
+
+    def _resolve_events_resource(self) -> tuple[str, str, str, ResourceDescriptor]:
+        candidates = [
+            ("events.k8s.io", "v1", "events"),
+            ("", "v1", "events"),
+        ]
+        last_error: KubernetesAPIError | None = None
+
+        for group, version, resource in candidates:
+            try:
+                descriptor = self.get_resource_descriptor(group, version, resource)
+                return group, version, resource, descriptor
+            except KubernetesAPIError as exc:
+                if exc.status_code != 404:
+                    raise
+                last_error = exc
+
+        raise KubernetesAPIError("当前集群未发现可用的 Events 资源。", status_code=404) from last_error
+
+    def _serialize_event_item(
+        self,
+        payload: dict[str, Any],
+        *,
+        group: str,
+        version: str,
+        resource: str,
+        descriptor: ResourceDescriptor,
+    ) -> dict[str, Any]:
+        metadata = payload.get("metadata") or {}
+        regarding = payload.get("regarding") or payload.get("involvedObject") or {}
+        source = payload.get("source") or {}
+        namespace = self._coalesce_text(metadata.get("namespace"), regarding.get("namespace"))
+        count = self._coerce_event_count(payload.get("deprecatedCount", payload.get("count")))
+
+        return {
+            "id": self._coalesce_text(metadata.get("uid"), f"{namespace}:{metadata.get('name', '')}"),
+            "name": self._coalesce_text(metadata.get("name")),
+            "namespace": namespace,
+            "type": self._coalesce_text(payload.get("type"), "Normal"),
+            "reason": self._coalesce_text(payload.get("reason")),
+            "message": self._coalesce_text(payload.get("note"), payload.get("message")),
+            "action": self._coalesce_text(payload.get("action")),
+            "count": count,
+            "event_time": self._coalesce_text(
+                payload.get("eventTime"),
+                payload.get("deprecatedLastTimestamp"),
+                payload.get("lastTimestamp"),
+                metadata.get("creationTimestamp"),
+            ),
+            "first_seen": self._coalesce_text(
+                payload.get("deprecatedFirstTimestamp"),
+                payload.get("firstTimestamp"),
+                metadata.get("creationTimestamp"),
+            ),
+            "last_seen": self._coalesce_text(
+                payload.get("deprecatedLastTimestamp"),
+                payload.get("lastTimestamp"),
+                payload.get("eventTime"),
+                metadata.get("creationTimestamp"),
+            ),
+            "regarding": {
+                "kind": self._coalesce_text(regarding.get("kind")),
+                "name": self._coalesce_text(regarding.get("name")),
+                "namespace": self._coalesce_text(regarding.get("namespace"), namespace),
+                "api_version": self._coalesce_text(regarding.get("apiVersion")),
+                "field_path": self._coalesce_text(regarding.get("fieldPath")),
+                "uid": self._coalesce_text(regarding.get("uid")),
+            },
+            "source": {
+                "component": self._coalesce_text(payload.get("reportingController"), source.get("component")),
+                "instance": self._coalesce_text(payload.get("reportingInstance"), source.get("host")),
+            },
+            "resource": {
+                "group": group or "core",
+                "version": version,
+                "name": resource,
+                "kind": descriptor.kind,
+            },
+            "metadata": {
+                "uid": self._coalesce_text(metadata.get("uid")),
+                "resource_version": self._coalesce_text(metadata.get("resourceVersion")),
+                "creation_timestamp": self._coalesce_text(metadata.get("creationTimestamp")),
+            },
+            "raw": payload,
+        }
+
+    def list_cluster_events(
+        self,
+        *,
+        namespace: str | None = None,
+        limit: int = 200,
+        continue_token: str | None = None,
+    ) -> dict[str, Any]:
+        group, version, resource, descriptor = self._resolve_events_resource()
+        path = build_resource_path(
+            group=group,
+            version=version,
+            resource=resource,
+            namespaced=True,
+            namespace=namespace,
+            all_namespaces=not bool(namespace),
+        )
+        payload = self.request_json(path, query={"limit": min(limit, 500), "continue": continue_token})
+        metadata = payload.get("metadata") or {}
+        items = payload.get("items", [])
+
+        return {
+            "resource": {
+                "group": group or "core",
+                "version": version,
+                "name": resource,
+                "kind": descriptor.kind,
+                "namespaced": descriptor.namespaced,
+                "namespace": namespace or None,
+            },
+            "items": [
+                self._serialize_event_item(
+                    item,
+                    group=group,
+                    version=version,
+                    resource=resource,
+                    descriptor=descriptor,
+                )
+                for item in items
+            ],
+            "metadata": {
+                "count": len(items),
                 "continue": metadata.get("continue", ""),
                 "resource_version": metadata.get("resourceVersion", ""),
             },

@@ -13,6 +13,7 @@ const navItems = [
   { label: '总览', short: '总', description: '平台运行态与快捷入口', to: { name: 'dashboard' } },
   { label: '集群', short: '集', description: '集群接入、状态与健康检查', to: { name: 'clusters' } },
   { label: '资源', short: '资', description: '工作负载与资源浏览操作', to: { name: 'explorer' } },
+  { label: '事件', short: '事', description: '跨命名空间查看 Kubernetes 事件', to: { name: 'events' } },
   { label: '审计', short: '审', description: '事件筛选、追踪与详情查看', to: { name: 'audit' } },
   { label: '设置', short: '设', description: '账号、映射与系统配置', to: { name: 'settings' } },
 ]

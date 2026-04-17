@@ -14,3 +14,4 @@ db.*
 .env
 kuboard-ui
 .github
+.codex

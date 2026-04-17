@@ -15,6 +15,7 @@ from apps.iam.api import (
 from apps.k8s_gateway.api import (
     ClusterDiscoveryView,
     ClusterPermissionRulesView,
+    EventListView,
     PodExecView,
     PodLogView,
     PodTerminalView,
@@ -65,6 +66,7 @@ urlpatterns = [
     path("api/v1/clusters", ClusterListCreateView.as_view(), name="cluster-list"),
     path("api/v1/clusters/<uuid:pk>", ClusterDetailView.as_view(), name="cluster-detail"),
     path("api/v1/clusters/<uuid:pk>/discovery", ClusterDiscoveryView.as_view(), name="cluster-discovery"),
+    path("api/v1/clusters/<uuid:pk>/events", EventListView.as_view(), name="cluster-events"),
     path(
         "api/v1/clusters/<uuid:pk>/permissions/rules",
         ClusterPermissionRulesView.as_view(),

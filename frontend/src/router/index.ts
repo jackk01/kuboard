@@ -8,6 +8,7 @@ import AppShell from '../components/AppShell.vue'
 import AuditPage from '../pages/AuditPage.vue'
 import ClustersPage from '../pages/ClustersPage.vue'
 import DashboardPage from '../pages/DashboardPage.vue'
+import EventsPage from '../pages/EventsPage.vue'
 import ExplorerPage from '../pages/ExplorerPage.vue'
 import LoginPage from '../pages/LoginPage.vue'
 import PodLogsPage from '../pages/PodLogsPage.vue'
@@ -48,6 +49,15 @@ const router = createRouter({
           path: 'explorer',
           name: 'explorer',
           component: ExplorerPage,
+        },
+        {
+          path: 'events',
+          name: 'events',
+          component: EventsPage,
+          meta: {
+            title: '事件',
+            description: '查看不同 namespace 的 Kubernetes Events',
+          },
         },
         {
           path: 'pod-logs',

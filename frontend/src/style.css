@@ -584,7 +584,8 @@ textarea {
 
 .status-ready,
 .status-healthy,
-.status-success {
+.status-success,
+.status-normal {
   color: var(--kb-success);
   background: #cff2e9;
   border-color: rgba(15, 190, 143, 0.26);
@@ -1094,6 +1095,76 @@ textarea {
 
 .audit-detail-item .json-block {
   max-height: 220px;
+}
+
+.events-toolbar {
+  grid-template-columns: 220px 220px 180px minmax(280px, 1fr);
+}
+
+.events-hero-panel {
+  background: rgba(255, 255, 255, 0.84);
+  backdrop-filter: blur(14px);
+}
+
+.events-split {
+  grid-template-columns: minmax(0, 1.5fr) minmax(340px, 0.7fr);
+}
+
+.events-table th:nth-child(1) {
+  min-width: 168px;
+}
+
+.events-table th:nth-child(5) {
+  min-width: 200px;
+}
+
+.events-table th:nth-child(6) {
+  min-width: 320px;
+}
+
+.events-table th:nth-child(7),
+.events-table td:nth-child(7) {
+  min-width: 72px;
+  white-space: nowrap;
+}
+
+.events-object-cell strong {
+  word-break: break-word;
+}
+
+.events-message-cell {
+  min-width: 0;
+}
+
+.events-message-text,
+.events-message-detail {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.events-message-text {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.events-meta-bar {
+  justify-content: space-between;
+}
+
+.events-toolbar > .field-label {
+  min-width: 0;
+}
+
+.events-toolbar .pod-quick-dropdown-menu {
+  max-height: min(320px, calc(100vh - 220px));
+  overflow-y: auto;
+}
+
+.events-summary-grid {
+  margin-top: 8px;
 }
 
 .explorer-hero-panel {
@@ -2314,7 +2385,9 @@ textarea {
   }
 
   .audit-toolbar,
-  .audit-split {
+  .audit-split,
+  .events-toolbar,
+  .events-split {
     grid-template-columns: 1fr;
   }
 
@@ -3091,7 +3164,8 @@ textarea:focus-visible {
 
 .status-ready,
 .status-healthy,
-.status-success {
+.status-success,
+.status-normal {
   background: rgba(31, 169, 113, 0.1);
   border-color: rgba(31, 169, 113, 0.16);
 }
