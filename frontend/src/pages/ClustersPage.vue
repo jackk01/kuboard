@@ -25,6 +25,19 @@ const localKubeconfigMeta = ref<{
 const searchKeyword = ref('')
 const statusFilter = ref<'all' | 'ready' | 'pending' | 'error'>('all')
 const environmentFilter = ref<'all' | 'test' | 'dev' | 'uat' | 'prod'>('all')
+const statusFilterOptions = [
+  { value: 'all', label: '全部状态' },
+  { value: 'ready', label: 'Ready' },
+  { value: 'pending', label: 'Pending' },
+  { value: 'error', label: 'Error' },
+] as const
+const environmentFilterOptions = [
+  { value: 'all', label: '全部环境' },
+  { value: 'test', label: 'test' },
+  { value: 'dev', label: 'dev' },
+  { value: 'uat', label: 'uat' },
+  { value: 'prod', label: 'prod' },
+] as const
 
 const form = reactive({
   name: '',
@@ -81,6 +94,19 @@ const filteredClusters = computed(() => {
 
 const environments = ['test', 'dev', 'uat', 'prod'] as const
 const canImportCluster = computed(() => Boolean(form.name.trim() && form.kubeconfig.trim()))
+const statusFilterMenuOpen = ref(false)
+const statusFilterMenuRef = ref<HTMLElement | null>(null)
+const environmentFilterMenuOpen = ref(false)
+const environmentFilterMenuRef = ref<HTMLElement | null>(null)
+const importEnvironmentMenuOpen = ref(false)
+const importEnvironmentMenuRef = ref<HTMLElement | null>(null)
+const selectedStatusFilterLabel = computed(
+  () => statusFilterOptions.find((option) => option.value === statusFilter.value)?.label || '全部状态',
+)
+const selectedEnvironmentFilterLabel = computed(
+  () => environmentFilterOptions.find((option) => option.value === environmentFilter.value)?.label || '全部环境',
+)
+const selectedImportEnvironmentLabel = computed(() => form.environment || '请选择环境')
 
 onMounted(async () => {
   await clusterStore.fetchClusters()
@@ -138,11 +164,80 @@ function handleShellCommand(event: Event) {
 
 onMounted(() => {
   window.addEventListener('kuboard:command', handleShellCommand as EventListener)
+  document.addEventListener('pointerdown', handleDocumentPointerdown)
+  window.addEventListener('keydown', handleGlobalKeydown)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('kuboard:command', handleShellCommand as EventListener)
+  document.removeEventListener('pointerdown', handleDocumentPointerdown)
+  window.removeEventListener('keydown', handleGlobalKeydown)
 })
+
+function closeCustomDropdownMenus() {
+  statusFilterMenuOpen.value = false
+  environmentFilterMenuOpen.value = false
+  importEnvironmentMenuOpen.value = false
+}
+
+function handleGlobalKeydown(event: KeyboardEvent) {
+  if (
+    event.key !== 'Escape' ||
+    (!statusFilterMenuOpen.value && !environmentFilterMenuOpen.value && !importEnvironmentMenuOpen.value)
+  ) {
+    return
+  }
+  event.preventDefault()
+  closeCustomDropdownMenus()
+}
+
+function handleDocumentPointerdown(event: PointerEvent) {
+  const target = event.target
+  if (!(target instanceof Node)) {
+    return
+  }
+  if (
+    statusFilterMenuRef.value?.contains(target) ||
+    environmentFilterMenuRef.value?.contains(target) ||
+    importEnvironmentMenuRef.value?.contains(target)
+  ) {
+    return
+  }
+  closeCustomDropdownMenus()
+}
+
+function toggleStatusFilterMenu() {
+  const nextOpen = !statusFilterMenuOpen.value
+  closeCustomDropdownMenus()
+  statusFilterMenuOpen.value = nextOpen
+}
+
+function selectStatusFilter(filter: (typeof statusFilterOptions)[number]['value']) {
+  statusFilter.value = filter
+  statusFilterMenuOpen.value = false
+}
+
+function toggleEnvironmentFilterMenu() {
+  const nextOpen = !environmentFilterMenuOpen.value
+  closeCustomDropdownMenus()
+  environmentFilterMenuOpen.value = nextOpen
+}
+
+function selectEnvironmentFilter(filter: (typeof environmentFilterOptions)[number]['value']) {
+  environmentFilter.value = filter
+  environmentFilterMenuOpen.value = false
+}
+
+function toggleImportEnvironmentMenu() {
+  const nextOpen = !importEnvironmentMenuOpen.value
+  closeCustomDropdownMenus()
+  importEnvironmentMenuOpen.value = nextOpen
+}
+
+function selectImportEnvironment(environment: (typeof environments)[number]) {
+  form.environment = environment
+  importEnvironmentMenuOpen.value = false
+}
 
 async function importCluster() {
   errorMessage.value = ''
@@ -385,16 +480,64 @@ async function confirmDelete() {
           class="cluster-search"
           placeholder="按名称 / server / context 搜索"
         />
-        <select v-model="statusFilter" class="cluster-filter">
-          <option value="all">全部状态</option>
-          <option value="ready">Ready</option>
-          <option value="pending">Pending</option>
-          <option value="error">Error</option>
-        </select>
-        <select v-model="environmentFilter" class="cluster-filter">
-          <option value="all">全部环境</option>
-          <option v-for="env in environments" :key="env" :value="env">{{ env }}</option>
-        </select>
+        <div
+          ref="statusFilterMenuRef"
+          class="pod-quick-dropdown"
+          :class="{ 'pod-quick-dropdown-open': statusFilterMenuOpen }"
+        >
+          <button
+            type="button"
+            class="pod-quick-dropdown-trigger"
+            :aria-expanded="statusFilterMenuOpen"
+            aria-haspopup="menu"
+            @click="toggleStatusFilterMenu"
+          >
+            <span class="pod-quick-dropdown-value">{{ selectedStatusFilterLabel }}</span>
+            <span class="pod-quick-dropdown-caret" aria-hidden="true"></span>
+          </button>
+
+          <div v-if="statusFilterMenuOpen" class="pod-quick-dropdown-menu">
+            <button
+              v-for="option in statusFilterOptions"
+              :key="option.value"
+              type="button"
+              class="pod-quick-dropdown-option"
+              :class="{ 'pod-quick-dropdown-option-active': statusFilter === option.value }"
+              @click="selectStatusFilter(option.value)"
+            >
+              {{ option.label }}
+            </button>
+          </div>
+        </div>
+        <div
+          ref="environmentFilterMenuRef"
+          class="pod-quick-dropdown"
+          :class="{ 'pod-quick-dropdown-open': environmentFilterMenuOpen }"
+        >
+          <button
+            type="button"
+            class="pod-quick-dropdown-trigger"
+            :aria-expanded="environmentFilterMenuOpen"
+            aria-haspopup="menu"
+            @click="toggleEnvironmentFilterMenu"
+          >
+            <span class="pod-quick-dropdown-value">{{ selectedEnvironmentFilterLabel }}</span>
+            <span class="pod-quick-dropdown-caret" aria-hidden="true"></span>
+          </button>
+
+          <div v-if="environmentFilterMenuOpen" class="pod-quick-dropdown-menu">
+            <button
+              v-for="option in environmentFilterOptions"
+              :key="option.value"
+              type="button"
+              class="pod-quick-dropdown-option"
+              :class="{ 'pod-quick-dropdown-option-active': environmentFilter === option.value }"
+              @click="selectEnvironmentFilter(option.value)"
+            >
+              {{ option.label }}
+            </button>
+          </div>
+        </div>
         <button class="button button-secondary" @click="importPanelOpen = !importPanelOpen">
           {{ importPanelOpen ? '隐藏导入面板' : '显示导入面板' }}
         </button>
@@ -542,12 +685,35 @@ async function confirmDelete() {
           </label>
           <label class="field-label">
             环境
-            <select v-model="form.environment">
-              <option value="test">test</option>
-              <option value="dev">dev</option>
-              <option value="uat">uat</option>
-              <option value="prod">prod</option>
-            </select>
+            <div
+              ref="importEnvironmentMenuRef"
+              class="pod-quick-dropdown"
+              :class="{ 'pod-quick-dropdown-open': importEnvironmentMenuOpen }"
+            >
+              <button
+                type="button"
+                class="pod-quick-dropdown-trigger"
+                :aria-expanded="importEnvironmentMenuOpen"
+                aria-haspopup="menu"
+                @click="toggleImportEnvironmentMenu"
+              >
+                <span class="pod-quick-dropdown-value">{{ selectedImportEnvironmentLabel }}</span>
+                <span class="pod-quick-dropdown-caret" aria-hidden="true"></span>
+              </button>
+
+              <div v-if="importEnvironmentMenuOpen" class="pod-quick-dropdown-menu">
+                <button
+                  v-for="env in environments"
+                  :key="env"
+                  type="button"
+                  class="pod-quick-dropdown-option"
+                  :class="{ 'pod-quick-dropdown-option-active': form.environment === env }"
+                  @click="selectImportEnvironment(env)"
+                >
+                  {{ env }}
+                </button>
+              </div>
+            </div>
           </label>
           <label class="field-label">
             描述

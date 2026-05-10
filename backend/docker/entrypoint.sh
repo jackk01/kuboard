@@ -24,6 +24,8 @@ if [ "$ROLE" = "api" ]; then
     --host 0.0.0.0 \
     --port "${PORT:-8000}" \
     --workers "${UVICORN_WORKERS:-1}" \
+    --log-level "${UVICORN_LOG_LEVEL:-${DJANGO_LOG_LEVEL:-info}}" \
+    --log-config /app/config/uvicorn_logging.json \
     --proxy-headers
 fi
 
@@ -35,4 +37,3 @@ fi
 
 echo "Unknown role: $ROLE" >&2
 exit 1
-

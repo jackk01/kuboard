@@ -1,6 +1,8 @@
+import json
 import os
 import sqlite3
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 from urllib.parse import quote, urlsplit, urlunsplit
@@ -92,7 +94,13 @@ def with_redis_password(url: str, password: Optional[str]) -> str:
 
 
 def emit_startup_log(level: str, message: str) -> None:
-    sys.stderr.write(f"[startup:{level.upper()}] {message}\n")
+    payload = {
+        "timestamp": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+        "level": level.upper(),
+        "logger": "startup",
+        "message": message,
+    }
+    sys.stderr.write(json.dumps(payload, ensure_ascii=False) + "\n")
     sys.stderr.flush()
 
 
@@ -293,15 +301,31 @@ LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
     "formatters": {
-        "verbose": {
-            "format": "[{levelname}] {asctime} {name} {message}",
-            "style": "{",
+        "json": {
+            "()": "common.logging.JsonFormatter",
         },
     },
     "handlers": {
         "console": {
             "class": "logging.StreamHandler",
-            "formatter": "verbose",
+            "formatter": "json",
+        },
+    },
+    "loggers": {
+        "django.server": {
+            "handlers": ["console"],
+            "level": DJANGO_LOG_LEVEL,
+            "propagate": False,
+        },
+        "uvicorn.error": {
+            "handlers": ["console"],
+            "level": DJANGO_LOG_LEVEL,
+            "propagate": False,
+        },
+        "uvicorn.access": {
+            "handlers": ["console"],
+            "level": DJANGO_LOG_LEVEL,
+            "propagate": False,
         },
     },
     "root": {

@@ -40,6 +40,11 @@ interface ExplorerSelectionState {
 
 type DeleteActionMode = 'delete' | 'restart'
 type TerminalShell = 'auto' | '/bin/sh' | '/bin/bash'
+interface PendingDeleteTarget {
+  key: string
+  name: string
+  namespace: string
+}
 
 const selectedClusterId = ref('')
 const selectedGroupKey = ref('')
@@ -92,6 +97,7 @@ const clusterMenuOpen = ref(false)
 const clusterMenuRef = ref<HTMLElement | null>(null)
 const namespaceMenuOpen = ref(false)
 const namespaceMenuRef = ref<HTMLElement | null>(null)
+const selectedPodKeys = ref<string[]>([])
 const selectedTerminalContainer = ref('')
 const terminalContainerMenuOpen = ref(false)
 const terminalContainerMenuRef = ref<HTMLElement | null>(null)
@@ -465,23 +471,25 @@ const filteredResourceItems = computed(() => {
     matchedItems = scoredItems.map((entry) => entry.item)
   }
 
-  return sortResourceItems(matchedItems)
+  return matchedItems
 })
 
-const resourceTotalPages = computed(() => Math.max(1, Math.ceil(filteredResourceItems.value.length / resourcePageSize.value)))
+const sortedResourceItems = computed(() => sortResourceItems(filteredResourceItems.value))
+
+const resourceTotalPages = computed(() => Math.max(1, Math.ceil(sortedResourceItems.value.length / resourcePageSize.value)))
 
 const paginatedResourceItems = computed(() => {
   const start = (resourcePage.value - 1) * resourcePageSize.value
-  return filteredResourceItems.value.slice(start, start + resourcePageSize.value)
+  return sortedResourceItems.value.slice(start, start + resourcePageSize.value)
 })
 
 const resourcePageStart = computed(() =>
-  filteredResourceItems.value.length ? (resourcePage.value - 1) * resourcePageSize.value + 1 : 0,
+  sortedResourceItems.value.length ? (resourcePage.value - 1) * resourcePageSize.value + 1 : 0,
 )
 
 const resourcePageEnd = computed(() =>
-  filteredResourceItems.value.length
-    ? Math.min(resourcePage.value * resourcePageSize.value, filteredResourceItems.value.length)
+  sortedResourceItems.value.length
+    ? Math.min(resourcePage.value * resourcePageSize.value, sortedResourceItems.value.length)
     : 0,
 )
 
@@ -496,6 +504,22 @@ const selectedNamespaceLabel = computed(() => selectedNamespace.value || 'cluste
 
 const selectedNamespaceOrDefault = computed(
   () => selectedItem.value?.metadata?.namespace || selectedNamespace.value || discovery.value?.context.default_namespace || 'default',
+)
+const selectedPodKeySet = computed(() => new Set(selectedPodKeys.value))
+const selectedPodItems = computed(() =>
+  (resourceList.value?.items ?? []).filter((item) => selectedPodKeySet.value.has(resourceItemKey(item))),
+)
+const selectedPodCount = computed(() => selectedPodItems.value.length)
+const paginatedPodItems = computed(() => (isPodListResource.value ? paginatedResourceItems.value : []))
+const allPaginatedPodsSelected = computed(
+  () =>
+    Boolean(paginatedPodItems.value.length) &&
+    paginatedPodItems.value.every((item) => selectedPodKeySet.value.has(resourceItemKey(item))),
+)
+const somePaginatedPodsSelected = computed(
+  () =>
+    paginatedPodItems.value.some((item) => selectedPodKeySet.value.has(resourceItemKey(item))) &&
+    !allPaginatedPodsSelected.value,
 )
 
 const containerOptions = computed(() => extractContainerNames(selectedDetail.value?.object ?? null))
@@ -598,8 +622,13 @@ const podRestartButtonLabel = computed(() => {
   return '重启'
 })
 const deleteDialogTitle = computed(() => (deleteActionMode.value === 'restart' ? '重启 Pod' : '删除资源'))
+const pendingDeleteTargets = ref<PendingDeleteTarget[]>([])
 const deleteDialogMessage = computed(() => {
-  if (!pendingDeleteName.value) {
+  if (deleteActionMode.value === 'delete' && pendingDeleteTargets.value.length > 1) {
+    return `确认删除这 ${pendingDeleteTargets.value.length} 个 Pod 吗？该操作不可撤销。`
+  }
+
+  if (!pendingDeleteName.value && !pendingDeleteTargets.value.length) {
     return ''
   }
 
@@ -611,7 +640,8 @@ const deleteDialogMessage = computed(() => {
     return `确认删除 Pod ${pendingDeleteName.value} 以触发重建吗？${ownerHint}`
   }
 
-  return `确认删除资源 ${pendingDeleteName.value} 吗？该操作不可撤销。`
+  const targetName = pendingDeleteTargets.value[0]?.name || pendingDeleteName.value
+  return `确认删除资源 ${targetName} 吗？该操作不可撤销。`
 })
 const deleteDialogConfirmText = computed(() => (deleteActionMode.value === 'restart' ? '删除并重建' : '删除'))
 const deploymentDesiredReplicas = computed(() => {
@@ -906,6 +936,95 @@ function resourceItemKey(item: Record<string, any> | null) {
   return `${metadata.namespace || 'cluster'}:${metadata.name || ''}`
 }
 
+function buildDeleteTarget(item: Record<string, any> | null): PendingDeleteTarget | null {
+  const name = String(item?.metadata?.name || '')
+  if (!name) {
+    return null
+  }
+
+  return {
+    key: resourceItemKey(item),
+    name,
+    namespace: String(item?.metadata?.namespace || ''),
+  }
+}
+
+function clearPodSelections() {
+  selectedPodKeys.value = []
+}
+
+function pruneSelectedPodKeys() {
+  if (!selectedPodKeys.value.length) {
+    return
+  }
+
+  const validKeys = new Set((resourceList.value?.items ?? []).map((item) => resourceItemKey(item)))
+  selectedPodKeys.value = selectedPodKeys.value.filter((key) => validKeys.has(key))
+}
+
+function isPodSelected(item: Record<string, any>) {
+  return selectedPodKeySet.value.has(resourceItemKey(item))
+}
+
+async function togglePodSelection(item: Record<string, any>, checked: boolean) {
+  if (!isPodListResource.value) {
+    return
+  }
+
+  const key = resourceItemKey(item)
+  if (!key) {
+    return
+  }
+
+  if (checked) {
+    if (!selectedPodKeySet.value.has(key)) {
+      selectedPodKeys.value = [...selectedPodKeys.value, key]
+    }
+    if (resourceItemKey(selectedItem.value) !== key) {
+      await loadResourceDetail(item, { preserveFeedback: true })
+    }
+    return
+  }
+
+  selectedPodKeys.value = selectedPodKeys.value.filter((selectedKey) => selectedKey !== key)
+}
+
+async function toggleAllPaginatedPods(checked: boolean) {
+  if (!isPodListResource.value) {
+    return
+  }
+
+  const pageKeys = paginatedPodItems.value.map((item) => resourceItemKey(item))
+  if (!pageKeys.length) {
+    return
+  }
+
+  if (checked) {
+    const mergedKeys = new Set(selectedPodKeys.value)
+    pageKeys.forEach((key) => mergedKeys.add(key))
+    selectedPodKeys.value = Array.from(mergedKeys)
+    if (!selectedItem.value && paginatedPodItems.value[0]) {
+      await loadResourceDetail(paginatedPodItems.value[0], { preserveFeedback: true })
+    }
+    return
+  }
+
+  const pageKeySet = new Set(pageKeys)
+  selectedPodKeys.value = selectedPodKeys.value.filter((key) => !pageKeySet.has(key))
+}
+
+function resolveCheckboxChecked(event: Event) {
+  return (event.target as HTMLInputElement | null)?.checked ?? false
+}
+
+async function handleTogglePodSelection(item: Record<string, any>, event: Event) {
+  await togglePodSelection(item, resolveCheckboxChecked(event))
+}
+
+async function handleToggleAllPaginatedPods(event: Event) {
+  await toggleAllPaginatedPods(resolveCheckboxChecked(event))
+}
+
 function resolveResourceName(item: Record<string, any> | null) {
   if (!item || typeof item !== 'object') {
     return ''
@@ -933,13 +1052,87 @@ function tokenizeSearchText(value: string) {
   return normalizedValue.split(/[\s\-._/]+/).filter(Boolean)
 }
 
-function resolveCreationTimestamp(item: Record<string, any> | null) {
-  const timestamp = item?.metadata?.creationTimestamp
-  if (!timestamp) {
+function resolveTimestampValue(value: unknown) {
+  if (!value) {
     return 0
   }
-  const timeValue = new Date(String(timestamp)).getTime()
+
+  const timeValue = new Date(String(value)).getTime()
   return Number.isNaN(timeValue) ? 0 : timeValue
+}
+
+function parseAgeLabelToDuration(label: string) {
+  const normalizedLabel = label.trim().toLowerCase()
+  if (!normalizedLabel) {
+    return -1
+  }
+  if (normalizedLabel === 'just now') {
+    return 0
+  }
+
+  const unitToMilliseconds: Record<string, number> = {
+    s: 1000,
+    m: 60 * 1000,
+    h: 60 * 60 * 1000,
+    d: 24 * 60 * 60 * 1000,
+    w: 7 * 24 * 60 * 60 * 1000,
+    y: 365 * 24 * 60 * 60 * 1000,
+  }
+  const matches = Array.from(normalizedLabel.matchAll(/(\d+)([smhdwy])/g))
+  if (!matches.length) {
+    return -1
+  }
+
+  const consumed = matches.map((match) => match[0]).join('')
+  if (consumed !== normalizedLabel) {
+    return -1
+  }
+
+  return matches.reduce((total, [, amountText, unit]) => {
+    const amount = Number(amountText)
+    const multiplier = unitToMilliseconds[unit] ?? 0
+    return total + amount * multiplier
+  }, 0)
+}
+
+function resolveCreationTimestamp(item: Record<string, any> | null) {
+  const metadata = item?.metadata ?? {}
+  const candidates = [
+    metadata.creationTimestamp,
+    metadata.creation_timestamp,
+    (item as Record<string, any> | null)?.creationTimestamp,
+    (item as Record<string, any> | null)?.creation_timestamp,
+  ]
+
+  for (const candidate of candidates) {
+    const timestamp = resolveTimestampValue(candidate)
+    if (timestamp) {
+      return timestamp
+    }
+  }
+
+  return 0
+}
+
+function resolveAgeSortTimestamp(item: Record<string, any> | null, now = Date.now()) {
+  const createdAt = resolveCreationTimestamp(item)
+  if (!createdAt) {
+    const ageCandidates = [
+      String((item?.metadata as Record<string, any> | undefined)?.age || ''),
+      String((item as Record<string, any> | null)?.age || ''),
+    ]
+
+    for (const candidate of ageCandidates) {
+      const ageDuration = parseAgeLabelToDuration(candidate)
+      if (ageDuration >= 0) {
+        return now - ageDuration
+      }
+    }
+
+    return 0
+  }
+
+  return createdAt
 }
 
 function compareResourceText(left: string, right: string) {
@@ -963,11 +1156,12 @@ function sortResourceItems(items: Array<Record<string, any>>) {
 
   const key = resourceSortKey.value
   const direction = resourceSortDirection.value === 'asc' ? 1 : -1
+  const now = key === 'age' ? Date.now() : 0
   return [...items].sort((left, right) => {
     let result = 0
 
     if (key === 'age') {
-      result = resolveCreationTimestamp(left) - resolveCreationTimestamp(right)
+      result = resolveAgeSortTimestamp(left, now) - resolveAgeSortTimestamp(right, now)
     } else {
       result = compareResourceText(
         getResourceSortText(left, key).toLowerCase(),
@@ -1107,7 +1301,7 @@ function syncResourcePageToSelectedItem() {
   }
 
   const selectedKey = resourceItemKey(selectedItem.value)
-  const index = filteredResourceItems.value.findIndex((item) => resourceItemKey(item) === selectedKey)
+  const index = sortedResourceItems.value.findIndex((item) => resourceItemKey(item) === selectedKey)
   if (index < 0) {
     return
   }
@@ -1336,6 +1530,7 @@ async function loadDiscovery(options: { preserveSelection?: boolean; resetState?
     resetSchemaState()
     resetFormEditorState()
     resetCreateState()
+    clearPodSelections()
   }
 
   try {
@@ -1574,6 +1769,7 @@ async function loadResources(options: { preserveFeedback?: boolean; targetKey?: 
   resetSchemaState()
   resetFormEditorState()
   resetCreateState()
+  clearPodSelections()
 
   try {
     resourceList.value = await fetchResourceListAllPages()
@@ -1599,6 +1795,14 @@ async function loadResources(options: { preserveFeedback?: boolean; targetKey?: 
   } finally {
     loadingResources.value = false
   }
+}
+
+async function refreshCurrentResourceList() {
+  if (!selectedClusterId.value || !selectedGroup.value || !selectedResourceName.value || loadingResources.value) {
+    return
+  }
+
+  await loadResources({ preserveFeedback: true })
 }
 
 function startEditing(mode: 'yaml' | 'form' = 'yaml') {
@@ -1978,19 +2182,26 @@ async function deleteResource() {
     !selectedClusterId.value ||
     !selectedGroup.value ||
     !selectedResourceName.value ||
-    !selectedItem.value ||
     !canDeleteResource.value
   ) {
     return
   }
 
-  const targetName = selectedItem.value.metadata?.name || ''
-  if (!targetName) {
+  const selectedTargets = isPodListResource.value
+    ? selectedPodItems.value
+        .map((item) => buildDeleteTarget(item))
+        .filter((item): item is PendingDeleteTarget => Boolean(item))
+    : []
+  const fallbackTarget = buildDeleteTarget(selectedItem.value)
+  const targets = selectedTargets.length ? selectedTargets : fallbackTarget ? [fallbackTarget] : []
+
+  if (!targets.length) {
     return
   }
 
   deleteActionMode.value = 'delete'
-  pendingDeleteName.value = targetName
+  pendingDeleteTargets.value = targets
+  pendingDeleteName.value = targets.length === 1 ? targets[0].name : ''
   deleteDialogVisible.value = true
 }
 
@@ -2013,6 +2224,7 @@ function restartPod() {
 
   deleteActionMode.value = 'restart'
   pendingDeleteName.value = targetName
+  pendingDeleteTargets.value = []
   deleteDialogVisible.value = true
 }
 
@@ -2020,6 +2232,7 @@ function cancelDeleteResource() {
   deleteDialogVisible.value = false
   deleteActionMode.value = 'delete'
   pendingDeleteName.value = ''
+  pendingDeleteTargets.value = []
 }
 
 async function confirmDeleteResource() {
@@ -2027,15 +2240,25 @@ async function confirmDeleteResource() {
     !selectedClusterId.value ||
     !selectedGroup.value ||
     !selectedResourceName.value ||
-    !selectedItem.value ||
     !canDeleteResource.value
   ) {
     cancelDeleteResource()
     return
   }
 
-  const targetName = pendingDeleteName.value || selectedItem.value.metadata?.name || ''
-  if (!targetName) {
+  const fallbackTarget = buildDeleteTarget(selectedItem.value)
+  const targets =
+    deleteActionMode.value === 'restart'
+      ? fallbackTarget
+        ? [fallbackTarget]
+        : []
+      : pendingDeleteTargets.value.length
+        ? pendingDeleteTargets.value
+        : fallbackTarget
+          ? [fallbackTarget]
+          : []
+
+  if (!targets.length) {
     cancelDeleteResource()
     return
   }
@@ -2052,22 +2275,55 @@ async function confirmDeleteResource() {
       : ''
 
   try {
-    await apiRequest(
-      `/api/v1/clusters/${selectedClusterId.value}/resources/${selectedGroup.value.group}/${selectedGroup.value.version}/${selectedResourceName.value}/${encodeURIComponent(targetName)}${namespaceQuery}`,
-      {
-        method: 'DELETE',
-      },
-    )
+    let deletedCount = 0
+    const failedTargets: string[] = []
+
+    for (const target of targets) {
+      const targetNamespaceQuery =
+        selectedResource.value?.namespaced && target.namespace
+          ? `?namespace=${encodeURIComponent(target.namespace)}`
+          : namespaceQuery
+
+      try {
+        await apiRequest(
+          `/api/v1/clusters/${selectedClusterId.value}/resources/${selectedGroup.value.group}/${selectedGroup.value.version}/${selectedResourceName.value}/${encodeURIComponent(target.name)}${targetNamespaceQuery}`,
+          {
+            method: 'DELETE',
+          },
+        )
+        deletedCount += 1
+      } catch (error) {
+        const displayName = target.namespace ? `${target.namespace}/${target.name}` : target.name
+        if (error instanceof ApiError) {
+          failedTargets.push(`${displayName}（${error.message}）`)
+        } else {
+          failedTargets.push(displayName)
+        }
+      }
+    }
+
+    if (!deletedCount) {
+      applyError.value =
+        failedTargets[0] || (deleteActionMode.value === 'restart' ? 'Pod 删除失败，请检查后端日志。' : '删除失败，请检查后端日志。')
+      return
+    }
+
     const successMessage =
       deleteActionMode.value === 'restart'
-        ? `Pod ${targetName} 已删除，若存在控制器将自动创建新的实例。`
-        : `资源 ${targetName} 已删除。`
+        ? `Pod ${targets[0]?.name || ''} 已删除，若存在控制器将自动创建新的实例。`
+        : targets.length > 1
+          ? `已删除 ${deletedCount} 个 Pod。`
+          : `资源 ${targets[0]?.name || ''} 已删除。`
     selectedItem.value = null
     selectedDetail.value = null
     editorText.value = ''
     isEditing.value = false
+    clearPodSelections()
     await loadResources({ preserveFeedback: true })
     applyMessage.value = successMessage
+    if (failedTargets.length) {
+      applyError.value = `其中 ${failedTargets.length} 个删除失败：${failedTargets.join('；')}`
+    }
   } catch (error) {
     if (error instanceof ApiError) {
       applyError.value = error.message
@@ -2078,6 +2334,7 @@ async function confirmDeleteResource() {
     deleting.value = false
     deleteActionMode.value = 'delete'
     pendingDeleteName.value = ''
+    pendingDeleteTargets.value = []
   }
 }
 
@@ -2265,9 +2522,19 @@ watch([resourceSortKey, resourceSortDirection], () => {
   resourcePage.value = 1
 })
 
-watch(filteredResourceItems, () => {
+watch(sortedResourceItems, () => {
   if (resourcePage.value > resourceTotalPages.value) {
     resourcePage.value = resourceTotalPages.value
+  }
+})
+
+watch(resourceList, () => {
+  pruneSelectedPodKeys()
+})
+
+watch(isPodListResource, (enabled) => {
+  if (!enabled) {
+    clearPodSelections()
   }
 })
 
@@ -2467,7 +2734,14 @@ watch(
               }}
             </p>
           </div>
-          <div v-if="resourceList" class="explorer-list-head-actions">
+          <div class="explorer-list-head-actions">
+            <button
+              class="button button-secondary explorer-list-refresh-button"
+              :disabled="!selectedResource || loadingResources"
+              @click="refreshCurrentResourceList"
+            >
+              {{ loadingResources ? '刷新中...' : '刷新' }}
+            </button>
             <label class="field-label explorer-search-field">
               <input
                 v-model="resourceSearchKeyword"
@@ -2489,6 +2763,16 @@ watch(
         <table v-else-if="paginatedResourceItems.length" class="table">
           <thead>
             <tr>
+              <th v-if="isPodListResource" style="width: 42px">
+                <input
+                  type="checkbox"
+                  aria-label="选择当前页所有 Pod"
+                  :checked="allPaginatedPodsSelected"
+                  :indeterminate="somePaginatedPodsSelected"
+                  @click.stop
+                  @change="handleToggleAllPaginatedPods"
+                />
+              </th>
               <th>
                 <button type="button" class="explorer-sort-button" @click="toggleResourceSort('name')">
                   Name
@@ -2530,6 +2814,15 @@ watch(
               @click="loadResourceDetail(item)"
               style="cursor: pointer"
             >
+              <td v-if="isPodListResource" style="width: 42px; text-align: center">
+                <input
+                  type="checkbox"
+                  :checked="isPodSelected(item)"
+                  :aria-label="`选择 Pod ${resolveResourceName(item) || '--'}`"
+                  @click.stop
+                  @change="handleTogglePodSelection(item, $event)"
+                />
+              </td>
               <td>
                 <span class="explorer-resource-name">{{ resolveResourceName(item) || '--' }}</span>
               </td>
@@ -2640,7 +2933,7 @@ watch(
             </button>
             <button
               class="button explorer-detail-action button-danger"
-              :disabled="!selectedDetail || isCreating || applying || deleting || loadingPermissions || !canDeleteResource"
+              :disabled="(!selectedDetail && !(isPodListResource && selectedPodCount > 0)) || isCreating || applying || deleting || loadingPermissions || !canDeleteResource"
               @click="deleteResource"
             >
               {{ deleting ? '删除中...' : '删除' }}
