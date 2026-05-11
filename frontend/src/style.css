@@ -1356,10 +1356,56 @@ textarea {
 }
 
 .explorer-list-refresh-button {
-  min-width: 88px;
-  min-height: 38px;
+  width: 38px !important;
+  min-width: 38px !important;
+  height: 38px !important;
+  min-height: 38px !important;
+  padding: 0 !important;
   border-radius: 999px;
   flex: 0 0 auto;
+  color: #173047 !important;
+  box-shadow: 0 6px 16px rgba(15, 35, 58, 0.05) !important;
+  line-height: 1;
+}
+
+.explorer-list-refresh-button:hover:not(:disabled) {
+  color: var(--kb-primary) !important;
+  box-shadow: 0 10px 20px rgba(15, 35, 58, 0.08) !important;
+}
+
+.explorer-list-refresh-button:disabled {
+  color: #5f7185 !important;
+  cursor: wait;
+  opacity: 1;
+}
+
+.explorer-list-refresh-icon {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: #173047 !important;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  flex: 0 0 auto;
+}
+
+.explorer-list-refresh-button:hover:not(:disabled) .explorer-list-refresh-icon {
+  stroke: var(--kb-primary) !important;
+}
+
+.explorer-list-refresh-button:disabled .explorer-list-refresh-icon {
+  stroke: #5f7185 !important;
+}
+
+.explorer-list-refresh-button-loading .explorer-list-refresh-icon {
+  animation: explorer-refresh-spin 900ms linear infinite;
+}
+
+@keyframes explorer-refresh-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .explorer-search-field {
@@ -2481,6 +2527,10 @@ textarea {
 
   .button {
     width: 100%;
+  }
+
+  .explorer-list-refresh-button {
+    width: 38px;
   }
 
   .pod-quick-action {

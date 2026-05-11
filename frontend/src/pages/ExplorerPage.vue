@@ -80,6 +80,7 @@ const applyMessage = ref('')
 const loadingDetail = ref(false)
 const loadingPermissions = ref(false)
 const loadingSchema = ref(false)
+const refreshingResourceList = ref(false)
 const applying = ref(false)
 const deleting = ref(false)
 const deleteDialogVisible = ref(false)
@@ -1798,11 +1799,35 @@ async function loadResources(options: { preserveFeedback?: boolean; targetKey?: 
 }
 
 async function refreshCurrentResourceList() {
-  if (!selectedClusterId.value || !selectedGroup.value || !selectedResourceName.value || loadingResources.value) {
+  if (
+    !selectedClusterId.value ||
+    !selectedGroup.value ||
+    !selectedResourceName.value ||
+    loadingResources.value ||
+    refreshingResourceList.value
+  ) {
     return
   }
 
-  await loadResources({ preserveFeedback: true })
+  refreshingResourceList.value = true
+  resourceError.value = ''
+
+  try {
+    const refreshedList = await fetchResourceListAllPages()
+    if (!refreshedList) {
+      return
+    }
+
+    resourceList.value = refreshedList
+  } catch (error) {
+    if (error instanceof ApiError) {
+      resourceError.value = error.message
+    } else {
+      resourceError.value = '资源列表刷新失败。'
+    }
+  } finally {
+    refreshingResourceList.value = false
+  }
 }
 
 function startEditing(mode: 'yaml' | 'form' = 'yaml') {
@@ -2736,11 +2761,25 @@ watch(
           </div>
           <div class="explorer-list-head-actions">
             <button
+              type="button"
               class="button button-secondary explorer-list-refresh-button"
-              :disabled="!selectedResource || loadingResources"
+              :class="{ 'explorer-list-refresh-button-loading': loadingResources || refreshingResourceList }"
+              :disabled="!selectedResource || loadingResources || refreshingResourceList"
+              :aria-label="loadingResources || refreshingResourceList ? '资源列表刷新中' : '刷新资源列表'"
+              :title="loadingResources || refreshingResourceList ? '刷新中' : '刷新资源列表'"
               @click="refreshCurrentResourceList"
             >
-              {{ loadingResources ? '刷新中...' : '刷新' }}
+              <svg
+                class="explorer-list-refresh-icon"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+                focusable="false"
+              >
+                <path d="M20 11a8.1 8.1 0 0 0-14.2-4.5L4 8.3" />
+                <path d="M4 4v4.3h4.3" />
+                <path d="M4 13a8.1 8.1 0 0 0 14.2 4.5L20 15.7" />
+                <path d="M20 20v-4.3h-4.3" />
+              </svg>
             </button>
             <label class="field-label explorer-search-field">
               <input
