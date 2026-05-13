@@ -5,6 +5,7 @@ Kuboard 是一款面向企业与平台团队的 Kubernetes 多集群管理面板
 当前仓库已经完成一版可运行 MVP，并补齐了部署、打包和上线前验收所需的基础工件：
 
 - `backend/`：Django + DRF + Celery + SQLite + Redis 控制平面
+- `backend-go/`：Go 重构版控制平面，当前作为并行迁移实现，兼容现有 `/api/v1` 与 SQLite 元数据
 - `frontend/`：Vue 3 + Vite + Pinia + Vue Router 控制台
 - `docker-compose.yml`：本地开发 Redis
 - `docker-compose.prod.yml`：单机生产部署编排
@@ -70,17 +71,17 @@ docker compose up -d redis
 
 ```bash
 cd backend
-python3 -m venv venv
-venv/bin/pip install -r requirements.txt
-venv/bin/python manage.py migrate
-venv/bin/python manage.py bootstrap_kuboard
+python3.11 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+python manage.py migrate
+python manage.py bootstrap_kuboard
 ```
 
 3. 启动后端
 
 ```bash
-cd backend
-venv/bin/python manage.py runserver
+python manage.py runserver
 ```
 
 4. 启动前端

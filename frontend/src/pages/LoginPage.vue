@@ -58,7 +58,9 @@ async function submit() {
               />
             </label>
 
-            <div class="helper-text auth-helper">默认演示账号：admin@kuboard.local / admin123456</div>
+            <div class="helper-text auth-helper">
+              默认管理员账号：admin@kuboard.local / admin123456
+            </div>
 
             <div v-if="errorMessage" class="error-text">{{ errorMessage }}</div>
 

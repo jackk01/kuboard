@@ -17,7 +17,7 @@ import SettingsPage from '../pages/SettingsPage.vue'
 import { useSessionStore } from '../stores/session'
 
 const router = createRouter({
-  history: createWebHistory(),
+  history: createWebHistory(import.meta.env.BASE_URL),
   routes: [
     {
       path: '/login',
